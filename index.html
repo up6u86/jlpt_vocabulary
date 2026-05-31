@@ -24268,7 +24268,7 @@
    "sentenceKanji": "カイロは歴史の古い都市です。",
    "sentenceKana": "かいろはれきしのふるいとしです。",
    "sentenceMeaning": "<u>開羅</u>是歷史悠久的都市。"
- }   
+ }
         ];
 
         // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
@@ -24342,36 +24342,48 @@
             }
         };
 
-        // --- ULTIMATE VOICE API (純 HTML5 Web Speech API，不依賴容易失效的外部連結) ---
-        window.currentUtterance = null;
-        window.playAudio = function(text, rate = 1.0) {
-            if (!text || !('speechSynthesis' in window)) return;
+        // --- ULTIMATE VOICE API (Google Cloud Fallback) ---
+        window.currentAudio = null;
+        window.playAudio = function(text, rate = 0.85) {
+            if (!text) return;
+            if (window.currentAudio) {
+                window.currentAudio.pause();
+                window.currentAudio.currentTime = 0;
+                window.currentAudio = null;
+            }
+            if ('speechSynthesis' in window) window.speechSynthesis.cancel();
             
-            window.speechSynthesis.cancel(); 
-            
+            try {
+                const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=${encodeURIComponent(text)}`;
+                const audio = new Audio(url);
+                window.currentAudio = audio;
+                audio.playbackRate = rate;
+                audio.play().catch(err => { fallbackLocalTTS(text, rate); });
+            } catch (error) {
+                fallbackLocalTTS(text, rate);
+            }
+        };
+
+        function fallbackLocalTTS(text, rate) {
+            if (!('speechSynthesis' in window)) return;
+            window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'ja-JP';
-            utterance.rate = rate; 
             
+            // 針對 iOS / Mac 裝置 (Apple 生態系) 的專屬語速校正
+            // Apple 的內建 Web Speech API 語速基準與 PC 不同，需減半才能達到相同聽感
+            const isAppleDevice = /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent);
+            utterance.rate = isAppleDevice ? rate * 0.5 : rate;
+
             const voices = window.speechSynthesis.getVoices();
-            const jaVoices = voices.filter(v => v.lang.includes('ja') || v.lang.includes('JP'));
-            
+            const jaVoices = voices.filter(v => v.lang.includes('ja'));
             if (jaVoices.length > 0) {
-                // 優先選擇高品質/原生的 Google 或 Apple 語音 (避免被當成中文唸)
-                const premiumVoice = jaVoices.find(v => 
-                    v.name.includes('Google') ||    
-                    v.name.includes('Premium') ||   
-                    v.name.includes('Siri') ||      
-                    v.name.includes('Kyoko') || 
-                    v.name.includes('Otoya') || 
-                    v.name.includes('Nanami')
-                );
+                const premiumVoice = jaVoices.find(v => v.name.includes('Premium') || v.name.includes('Siri') || v.name.includes('Otoya') || v.name.includes('Kyoko'));
                 utterance.voice = premiumVoice || jaVoices[0];
             }
-            
             window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
             window.speechSynthesis.speak(utterance);
-        };
+        }
 
         if ('speechSynthesis' in window) {
             window.speechSynthesis.getVoices();
@@ -24491,6 +24503,7 @@
             window.unlockAudio(); // 確保語音解鎖
             const idInput = document.getElementById('login-id');
             const errorMsg = document.getElementById('login-error');
+            // 嚴格對比：移除 toLowerCase()，保持精確字元比對
             const studentIdVal = idInput.value.trim();
 
             if (!studentIdVal) {
@@ -24572,6 +24585,7 @@
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
+                // 儲存進度時以 merge 方式更新
                 await setDoc(docRef, {
                     targetLevel: window.state.targetLevel,
                     dailyGoal: window.state.dailyGoal,
@@ -25089,7 +25103,7 @@
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3 relative animate-slide-up">
                         <div class="flex justify-between items-start">
                             <div class="flex gap-4 items-center">
-                                <button onclick="window.playAudio('${w.kana}', 1.2)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${w.kana}', 0.85)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     ${icons.volume}
                                 </button>
                                 <div>
@@ -25169,7 +25183,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto">
@@ -25192,7 +25206,7 @@
                     <div class="w-full relative mt-auto mb-4">
                         <input type="text" id="kana-input" 
                             class="w-full text-center text-3xl font-black p-4 bg-white shadow-sm border border-sky-200 rounded-2xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition-all placeholder-slate-300 text-indigo-600"
-                            placeholder="請輸入專屬學生帳號" 
+                            placeholder="輸入假名" 
                             value="${window.state.inputValue}"
                             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                         <div id="feedback-hint" class="text-center mt-3 h-5 text-sm font-bold transition-colors"></div>
@@ -25222,9 +25236,6 @@
             const inputElement = document.getElementById('kana-input');
             const submitBtn = document.getElementById('submit-btn');
             const hintElement = document.getElementById('feedback-hint');
-
-            // 單字學習輸入框預設文字應為 "輸入假名"
-            inputElement.placeholder = "輸入假名";
 
             inputElement.focus();
 
@@ -25318,7 +25329,7 @@
                 evalSRS(); 
                 
                 const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
-                window.playAudio(audioSentence, 1.2);
+                window.playAudio(audioSentence, 0.85);
                 
                 window.state.view = 'success';
                 window.render();
@@ -25417,7 +25428,7 @@
                         <div class="mt-6 flex flex-col items-center justify-center w-full">
                             <div class="flex items-center gap-3 mb-2 justify-center">
                                 <div class="text-3xl text-indigo-600">${generateRuby(word.kanji, word.kana)}</div>
-                                <button onclick="window.playAudio('${word.kana}', 1.2)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${word.kana}', 0.85)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
                                 </button>
                             </div>
@@ -25428,15 +25439,15 @@
                     <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up mt-4">
                         
                         <div class="flex gap-2 mb-4 border-b border-slate-50 pb-4">
-                            <button onclick="window.playAudio('${audioSentence}', 0.8)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 0.55)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.turtle}
                                 <span class="text-[10px] font-bold mt-1">慢速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 1.2)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
+                            <button onclick="window.playAudio('${audioSentence}', 0.85)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
                                 ${icons.volume}
                                 <span class="text-[10px] font-bold mt-1">預設語速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 1.9)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 1.35)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.zap}
                                 <span class="text-[10px] font-bold mt-1">日本人語速</span>
                             </button>
@@ -25536,8 +25547,8 @@
             
             const audioSentence = word.sentenceKanji.split(word.kanji).join(word.kana);
 
-            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 1.2);
-            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 1.2);
+            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 0.85);
+            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 0.85);
 
             modal.classList.remove('hidden');
             setTimeout(() => {
