@@ -1,4 +1,4 @@
-# <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -146,7 +146,7 @@
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
-         {
+ {
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24268,7 +24268,7 @@
    "sentenceKanji": "カイロは歴史の古い都市です。",
    "sentenceKana": "かいろはれきしのふるいとしです。",
    "sentenceMeaning": "<u>開羅</u>是歷史悠久的都市。"
- }         
+ }
         ];
 
         // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
@@ -24304,6 +24304,13 @@
         }
 
         function isKana(text) { return /^[\u3040-\u309F\u30A0-\u30FFー]*$/.test(text); }
+
+        // 新增：將片假名自動轉換為平假名的函式
+        function toHiragana(text) {
+            return text.replace(/[\u30A1-\u30F6]/g, match =>
+                String.fromCharCode(match.charCodeAt(0) - 0x60)
+            );
+        }
 
         function getLogicalDateStr(offsetDays = 0) {
             // 凌晨3點換日邏輯
@@ -25275,12 +25282,16 @@
                 return;
             }
 
-            if (val === target) {
+            // 在背後將輸入與目標答案統一轉換為平假名進行無縫比對
+            const normVal = toHiragana(val);
+            const normTarget = toHiragana(target);
+
+            if (normVal === normTarget) {
                 hintEl.innerHTML = `<span class="text-green-600 bg-green-100 px-3 py-1 rounded-full shadow-sm">正確！點擊確認 ✨</span>`;
             } else {
-                const dist = levenshtein(val, target);
-                if (target.startsWith(val)) {
-                    hintEl.innerHTML = `<span class="text-slate-500 bg-white shadow-sm px-3 py-1 rounded-full border border-slate-100">還差 ${target.length - val.length} 個字...</span>`;
+                const dist = levenshtein(normVal, normTarget);
+                if (normTarget.startsWith(normVal)) {
+                    hintEl.innerHTML = `<span class="text-slate-500 bg-white shadow-sm px-3 py-1 rounded-full border border-slate-100">還差 ${normTarget.length - normVal.length} 個字...</span>`;
                 } else {
                     hintEl.innerHTML = `<span class="text-red-500 bg-red-100 px-3 py-1 rounded-full shadow-sm">有 ${dist} 個字母不一樣</span>`;
                 }
@@ -25291,7 +25302,11 @@
             const val = window.state.inputValue.trim();
             const target = window.state.currentWord.kana;
 
-            if (val === target) {
+            // 結算時也統一使用平假名比對
+            const normVal = toHiragana(val);
+            const normTarget = toHiragana(target);
+
+            if (normVal === normTarget) {
                 evalSRS(); 
                 
                 const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
