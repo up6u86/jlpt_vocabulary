@@ -1,1 +1,0 @@
-# japanese_test_vocabulary
