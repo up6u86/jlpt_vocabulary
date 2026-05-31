@@ -146,7 +146,7 @@
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
- {
+{
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24268,7 +24268,7 @@
    "sentenceKanji": "カイロは歴史の古い都市です。",
    "sentenceKana": "かいろはれきしのふるいとしです。",
    "sentenceMeaning": "<u>開羅</u>是歷史悠久的都市。"
- }
+ }   
         ];
 
         // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
@@ -24305,7 +24305,6 @@
 
         function isKana(text) { return /^[\u3040-\u309F\u30A0-\u30FFー]*$/.test(text); }
 
-        // 新增：將片假名自動轉換為平假名的函式
         function toHiragana(text) {
             return text.replace(/[\u30A1-\u30F6]/g, match =>
                 String.fromCharCode(match.charCodeAt(0) - 0x60)
@@ -24319,6 +24318,18 @@
         }
         function getYesterdayStr() { return getLogicalDateStr(-1); }
 
+        // --- AUDIO UNLOCK MECHANISM (針對手機瀏覽器阻擋) ---
+        window.appAudioUnlocked = false;
+        window.unlockAudio = function() {
+            if (window.appAudioUnlocked) return;
+            if ('speechSynthesis' in window) {
+                let u = new SpeechSynthesisUtterance('');
+                u.volume = 0;
+                window.speechSynthesis.speak(u);
+            }
+            window.appAudioUnlocked = true;
+        };
+
         // --- RECORD MISTAKE ---
         window.recordMistakeOnce = function() {
             if (window.state.currentWord && !window.state.currentWord.countedMistake) {
@@ -24331,42 +24342,36 @@
             }
         };
 
-        // --- VOICE API (Google Cloud Fallback) ---
-        window.currentAudio = null;
-        window.playAudio = function(text, rate = 1.2) {
-            if (!text) return;
-            if (window.currentAudio) {
-                window.currentAudio.pause();
-                window.currentAudio.currentTime = 0;
-                window.currentAudio = null;
-            }
-            if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        // --- ULTIMATE VOICE API (純 HTML5 Web Speech API，不依賴容易失效的外部連結) ---
+        window.currentUtterance = null;
+        window.playAudio = function(text, rate = 1.0) {
+            if (!text || !('speechSynthesis' in window)) return;
             
-            try {
-                const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=${encodeURIComponent(text)}`;
-                const audio = new Audio(url);
-                window.currentAudio = audio;
-                audio.playbackRate = rate;
-                audio.play().catch(err => { fallbackLocalTTS(text, rate); });
-            } catch (error) {
-                fallbackLocalTTS(text, rate);
-            }
-        };
-
-        function fallbackLocalTTS(text, rate) {
-            if (!('speechSynthesis' in window)) return;
-            window.speechSynthesis.cancel();
+            window.speechSynthesis.cancel(); 
+            
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'ja-JP';
-            utterance.rate = rate;
+            utterance.rate = rate; 
+            
             const voices = window.speechSynthesis.getVoices();
-            const jaVoices = voices.filter(v => v.lang.includes('ja'));
+            const jaVoices = voices.filter(v => v.lang.includes('ja') || v.lang.includes('JP'));
+            
             if (jaVoices.length > 0) {
-                const premiumVoice = jaVoices.find(v => v.name.includes('Premium') || v.name.includes('Siri') || v.name.includes('Otoya') || v.name.includes('Kyoko'));
+                // 優先選擇高品質/原生的 Google 或 Apple 語音 (避免被當成中文唸)
+                const premiumVoice = jaVoices.find(v => 
+                    v.name.includes('Google') ||    
+                    v.name.includes('Premium') ||   
+                    v.name.includes('Siri') ||      
+                    v.name.includes('Kyoko') || 
+                    v.name.includes('Otoya') || 
+                    v.name.includes('Nanami')
+                );
                 utterance.voice = premiumVoice || jaVoices[0];
             }
+            
+            window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
             window.speechSynthesis.speak(utterance);
-        }
+        };
 
         if ('speechSynthesis' in window) {
             window.speechSynthesis.getVoices();
@@ -24446,7 +24451,6 @@
                 if (typeof __firebase_config !== 'undefined') {
                     firebaseConfig = JSON.parse(__firebase_config);
                 } else {
-                    // 生產環境：載入您的專屬 Firebase 金鑰
                     firebaseConfig = {
                         apiKey: "AIzaSyB3zjrz8FjyOzeCkm8NtA2UGdQ27pw9x6Q",
                         authDomain: "jlpt-vocabulary-b0bcf.firebaseapp.com",
@@ -24478,16 +24482,15 @@
                 window.render();
             } catch (e) {
                 console.error("Firebase Init Error/Bypass:", e);
-                // 即使 Firebase 未連接，也預設進入登入畫面以維持相同流程
                 window.state.view = 'login'; 
                 window.render();
             }
         }
 
         window.handleLogin = async function() {
+            window.unlockAudio(); // 確保語音解鎖
             const idInput = document.getElementById('login-id');
             const errorMsg = document.getElementById('login-error');
-            // 嚴格對比：移除 toLowerCase()，保持精確字元比對
             const studentIdVal = idInput.value.trim();
 
             if (!studentIdVal) {
@@ -24569,7 +24572,6 @@
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
-                // 儲存進度時以 merge 方式更新
                 await setDoc(docRef, {
                     targetLevel: window.state.targetLevel,
                     dailyGoal: window.state.dailyGoal,
@@ -24689,7 +24691,7 @@
         window.createStudentAccount = async function() {
             const input = document.getElementById('new-student-id');
             const msgBox = document.getElementById('admin-msg');
-            const newId = input.value.trim(); // 保持精確字串比對
+            const newId = input.value.trim();
 
             if (!newId) {
                 msgBox.className = "font-bold mt-4 px-4 py-2 rounded-lg text-sm border text-center w-full text-red-500 bg-red-50 border-red-100";
@@ -24714,7 +24716,6 @@
                     msgBox.innerText = "帳號已存在！請換一個。";
                     msgBox.classList.remove('hidden');
                 } else {
-                    // 極簡化資料結構
                     await setDoc(docRef, {
                         studentId: newId,
                         createdAt: new Date().toISOString()
@@ -24913,6 +24914,7 @@
         }
 
         window.startTest = function() {
+            window.unlockAudio();
             window.state.sessionQueue = generateTestQueue(window.state.targetLevel);
             window.state.completedToday = 0;
             window.state.isTesting = true;
@@ -24922,6 +24924,7 @@
         }
 
         window.startMakeUp = function() {
+            window.unlockAudio();
             window.state.isMakeUp = true;
             window.state.isTesting = false;
             window.state.sessionQueue = generateDailyQueue(20); 
@@ -24931,6 +24934,7 @@
         }
 
         window.startDaily = function() {
+            window.unlockAudio();
             window.state.sessionQueue = generateDailyQueue();
             window.state.completedToday = 0;
             window.state.isTesting = false;
@@ -24940,6 +24944,7 @@
         }
 
         window.startExtra = function() {
+            window.unlockAudio();
             window.state.dailyGoal += 5;
             window.state.sessionQueue = generateDailyQueue(5); 
             window.state.isTesting = false;
@@ -25187,7 +25192,7 @@
                     <div class="w-full relative mt-auto mb-4">
                         <input type="text" id="kana-input" 
                             class="w-full text-center text-3xl font-black p-4 bg-white shadow-sm border border-sky-200 rounded-2xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition-all placeholder-slate-300 text-indigo-600"
-                            placeholder="輸入假名" 
+                            placeholder="請輸入專屬學生帳號" 
                             value="${window.state.inputValue}"
                             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                         <div id="feedback-hint" class="text-center mt-3 h-5 text-sm font-bold transition-colors"></div>
@@ -25217,6 +25222,9 @@
             const inputElement = document.getElementById('kana-input');
             const submitBtn = document.getElementById('submit-btn');
             const hintElement = document.getElementById('feedback-hint');
+
+            // 單字學習輸入框預設文字應為 "輸入假名"
+            inputElement.placeholder = "輸入假名";
 
             inputElement.focus();
 
@@ -25264,6 +25272,7 @@
             window.state.mistakes++; 
             window.recordMistakeOnce(); 
             if (window.state.inputValue.length < target.length) {
+                // 自動帶入假名
                 window.state.inputValue = target.substring(0, window.state.inputValue.length + 1);
                 window.renderStudySoftUpdate();
                 window.validateInput(document.getElementById('feedback-hint'));
@@ -25282,7 +25291,7 @@
                 return;
             }
 
-            // 在背後將輸入與目標答案統一轉換為平假名進行無縫比對
+            // 平假名與片假名統一轉為平假名再做比對
             const normVal = toHiragana(val);
             const normTarget = toHiragana(target);
 
@@ -25302,7 +25311,6 @@
             const val = window.state.inputValue.trim();
             const target = window.state.currentWord.kana;
 
-            // 結算時也統一使用平假名比對
             const normVal = toHiragana(val);
             const normTarget = toHiragana(target);
 
@@ -25386,7 +25394,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto">
