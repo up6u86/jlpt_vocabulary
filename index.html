@@ -107,7 +107,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- 全域變數掛載 ---
         window.state = {
@@ -143,10 +143,11 @@
         let db, auth, appId;
         let currentUserAuth = null;
         let currentStudentId = null;
+        let unsubscribeSnapshot = null; // 用於儲存監聽器的取消函式
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
-{
+       {
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24357,7 +24358,12 @@
                 const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=${encodeURIComponent(text)}`;
                 const audio = new Audio(url);
                 window.currentAudio = audio;
+                
+                audio.defaultPlaybackRate = rate;
                 audio.playbackRate = rate;
+                audio.addEventListener('loadedmetadata', () => { audio.playbackRate = rate; });
+                audio.addEventListener('canplay', () => { audio.playbackRate = rate; });
+
                 audio.play().catch(err => { fallbackLocalTTS(text, rate); });
             } catch (error) {
                 fallbackLocalTTS(text, rate);
@@ -24370,17 +24376,14 @@
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'ja-JP';
             
-            // 針對 iOS / Mac 裝置 (Apple 生態系) 的專屬語速校正
-            // Apple 的內建 Web Speech API 語速基準與 PC 不同，需減半才能達到相同聽感
-            const isAppleDevice = /iPhone|iPad|iPod|Mac/i.test(navigator.userAgent);
-            utterance.rate = isAppleDevice ? rate * 0.5 : rate;
-
             const voices = window.speechSynthesis.getVoices();
             const jaVoices = voices.filter(v => v.lang.includes('ja'));
             if (jaVoices.length > 0) {
                 const premiumVoice = jaVoices.find(v => v.name.includes('Premium') || v.name.includes('Siri') || v.name.includes('Otoya') || v.name.includes('Kyoko'));
                 utterance.voice = premiumVoice || jaVoices[0];
             }
+
+            utterance.rate = rate;
             window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
             window.speechSynthesis.speak(utterance);
         }
@@ -24490,11 +24493,103 @@
                 }
                 currentUserAuth = auth.currentUser;
                 
-                window.state.view = 'login';
-                window.render();
+                // 檢查 LocalStorage 是否有記住的帳號
+                const savedStudentId = localStorage.getItem('sandy_jp_student_id');
+                if (savedStudentId) {
+                    // 若有記錄，自動跳過手動登入畫面，直接進行登入
+                    currentStudentId = savedStudentId;
+                    await processLogin(savedStudentId);
+                } else {
+                    window.state.view = 'login';
+                    window.render();
+                }
             } catch (e) {
                 console.error("Firebase Init Error/Bypass:", e);
                 window.state.view = 'login'; 
+                window.render();
+            }
+        }
+
+        // 將登入邏輯獨立出來，方便手動登入與自動登入共用
+        async function processLogin(studentIdVal) {
+            window.state.view = 'loading';
+            window.render();
+
+            if (db && currentUserAuth) {
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', studentIdVal);
+                    
+                    // 設定雙向即時監聽 (onSnapshot) 取代單次讀取 (getDoc)
+                    // 這樣只要任何一端有改變進度，當前頁面就會瞬間同步更新！
+                    if (unsubscribeSnapshot) {
+                        unsubscribeSnapshot(); // 清除之前的監聽器
+                    }
+                    
+                    unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            
+                            // 只有在非學習狀態下，或是遠端資料比本地新時才強烈覆蓋 (避免打字打一半被洗掉)
+                            // 這裡為了確保兩邊即時同步，我們做狀態合併
+                            window.state = { ...window.state, ...data };
+                            
+                            const today = getLogicalDateStr();
+                            const yesterday = getYesterdayStr();
+                            
+                            // 若是今天第一次登入，處理每日重置邏輯
+                            if (window.state.lastActiveDate !== today) {
+                                window.state.completedToday = 0;
+                                window.state.justCompletedTest = false;
+                                
+                                if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
+                                    if (window.state.streakDays > 0) {
+                                        window.state.savedStreak = window.state.streakDays; 
+                                    }
+                                    window.state.streakDays = 0;
+                                    window.state.madeUpYesterday = false;
+                                } else if (window.state.lastStreakDate === yesterday) {
+                                    window.state.madeUpYesterday = false; 
+                                }
+                                window.state.lastActiveDate = today;
+                                window.saveProgress();
+                            }
+                            
+                            // 若當前在 loading，自動切換至 dashboard
+                            if (window.state.view === 'loading') {
+                                window.state.view = 'dashboard';
+                            }
+                            window.render();
+                        } else {
+                            // 帳號不存在
+                            currentStudentId = null;
+                            localStorage.removeItem('sandy_jp_student_id');
+                            if (unsubscribeSnapshot) unsubscribeSnapshot();
+                            
+                            window.state.view = 'login';
+                            window.render();
+                            setTimeout(() => {
+                                const err = document.getElementById('login-error');
+                                if(err) {
+                                    err.innerText = "登入失敗：找不到此專屬帳號，請檢查大小寫與符號是否完全正確";
+                                    err.classList.remove('hidden');
+                                }
+                            }, 50);
+                        }
+                    }, (error) => {
+                        console.error("Snapshot error:", error);
+                        alert("即時連線中斷，請重新整理頁面。");
+                    });
+
+                } catch (e) {
+                    console.error("Setup listener failed", e);
+                    alert("讀取進度失敗。");
+                    currentStudentId = null;
+                    localStorage.removeItem('sandy_jp_student_id');
+                    window.state.view = 'login';
+                    window.render();
+                }
+            } else {
+                window.state.view = 'dashboard';
                 window.render();
             }
         }
@@ -24503,7 +24598,6 @@
             window.unlockAudio(); // 確保語音解鎖
             const idInput = document.getElementById('login-id');
             const errorMsg = document.getElementById('login-error');
-            // 嚴格對比：移除 toLowerCase()，保持精確字元比對
             const studentIdVal = idInput.value.trim();
 
             if (!studentIdVal) {
@@ -24519,64 +24613,20 @@
             }
 
             currentStudentId = studentIdVal;
-            window.state.view = 'loading';
-            window.render();
-
-            if (db && currentUserAuth) {
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
-                    const docSnap = await getDoc(docRef);
-                    
-                    if (docSnap.exists()) {
-                        const data = docSnap.data();
-                        window.state = { ...window.state, ...data, view: 'dashboard' };
-                        
-                        const today = getLogicalDateStr();
-                        const yesterday = getYesterdayStr();
-                        
-                        if (window.state.lastActiveDate !== today) {
-                            window.state.completedToday = 0;
-                            window.state.justCompletedTest = false;
-                            
-                            if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
-                                if (window.state.streakDays > 0) {
-                                    window.state.savedStreak = window.state.streakDays; 
-                                }
-                                window.state.streakDays = 0;
-                                window.state.madeUpYesterday = false;
-                            } else if (window.state.lastStreakDate === yesterday) {
-                                window.state.madeUpYesterday = false; 
-                            }
-                            window.state.lastActiveDate = today;
-                            window.saveProgress();
-                        }
-                    } else {
-                        currentStudentId = null;
-                        window.state.view = 'login';
-                        window.render();
-                        setTimeout(() => {
-                            const err = document.getElementById('login-error');
-                            if(err) {
-                                err.innerText = "登入失敗：找不到此專屬帳號，請檢查大小寫與符號是否完全正確";
-                                err.classList.remove('hidden');
-                            }
-                        }, 50);
-                        return;
-                    }
-                } catch (e) {
-                    console.error("Fetch profile failed", e);
-                    alert("讀取進度失敗。");
-                    currentStudentId = null;
-                    window.state.view = 'login';
-                }
-            } else {
-                window.state.view = 'dashboard';
-            }
-            window.render();
+            // 將帳號存入 LocalStorage，實現自動登入
+            localStorage.setItem('sandy_jp_student_id', studentIdVal);
+            
+            await processLogin(studentIdVal);
         };
 
         window.handleLogout = function() {
             currentStudentId = null;
+            // 登出時徹底清除 LocalStorage 記錄與斷開監聽
+            localStorage.removeItem('sandy_jp_student_id');
+            if (unsubscribeSnapshot) {
+                unsubscribeSnapshot();
+                unsubscribeSnapshot = null;
+            }
             window.state.view = 'login';
             window.render();
         }
@@ -25114,13 +25164,14 @@
                             <div class="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-1 rounded-md shrink-0 ml-2">錯 ${mistakesCount} 次</div>
                         </div>
                         
-                        <div class="flex gap-2 justify-end border-t border-slate-50 pt-3 mt-1">
+                        <div class="flex gap-2 justify-end border-t border-slate-50 pt-3 mt-1 flex-wrap">
+                            <button onclick="window.openModal(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 active:scale-95 transition-all shadow-sm">📖 詳情</button>
                             ${ !p.inMyNotes ? 
                                `<button onclick="window.toggleMyNote(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-purple-50 text-purple-600 rounded-xl hover:bg-purple-100 active:scale-95 transition-all shadow-sm">⭐ 加入筆記</button>` :
-                               `<button onclick="window.toggleMyNote(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200 active:scale-95 transition-all">❌ 移除筆記</button>`
+                               `<button onclick="window.toggleMyNote(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200 active:scale-95 transition-all">❌ 移除</button>`
                             }
                             ${ tab.startsWith('mistakes') ? 
-                               `<button onclick="window.hideFromMistakes(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 active:scale-95 transition-all shadow-sm">🗑️ 已學會(隱藏)</button>` : ''
+                               `<button onclick="window.hideFromMistakes(${w.id})" class="flex items-center gap-1 text-xs font-bold px-3 py-1.5 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 active:scale-95 transition-all shadow-sm">🗑️ 隱藏</button>` : ''
                             }
                         </div>
                     </div>
@@ -25176,7 +25227,7 @@
             if (window.state.isMakeUp) activeGoal = 20;
 
             container.innerHTML = `
-                <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10">
+                <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10 shrink-0">
                     <button onclick="window.goToDashboard()" class="p-2 active:scale-90 transition-transform hover:text-slate-600">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
                     </button>
@@ -25186,8 +25237,8 @@
                     <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
-                <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto">
-                    <div class="bg-white w-full rounded-[1.5rem] shadow-sm border border-sky-100 flex flex-col pt-4 pb-8 px-5 relative mb-4">
+                <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
+                    <div class="bg-white w-full rounded-[1.5rem] shadow-sm border border-sky-100 flex flex-col pt-4 pb-8 px-5 relative shrink-0 mb-4">
                         <div class="flex justify-between items-center mb-6">
                             <div class="flex items-center gap-1 text-slate-400 font-bold text-xs bg-slate-50 px-3 py-1 rounded-md tracking-wider">
                                 ${word.level} 級
@@ -25212,7 +25263,7 @@
                         <div id="feedback-hint" class="text-center mt-3 h-5 text-sm font-bold transition-colors"></div>
                     </div>
 
-                    <div class="w-full flex justify-between items-center px-4 py-2">
+                    <div class="w-full flex justify-between items-center px-4 py-2 shrink-0">
                         <button onclick="window.goPrevious()" class="flex flex-col items-center justify-center text-slate-400 hover:text-indigo-500 transition-colors active:scale-95 ${window.state.historyQueue.length === 0 ? 'opacity-30 cursor-not-allowed' : ''}" ${window.state.historyQueue.length === 0 ? 'disabled' : ''}>
                             <div class="bg-white p-3 rounded-full shadow-sm mb-1"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></div>
                             <span class="text-xs font-bold">上一題</span>
@@ -25398,7 +25449,7 @@
             if (window.state.isMakeUp) activeGoal = 20;
 
             container.innerHTML = `
-                <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10">
+                <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10 shrink-0">
                     <button onclick="window.goToDashboard()" class="p-2 active:scale-90 transition-transform hover:text-slate-600">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
                     </button>
@@ -25408,8 +25459,8 @@
                     <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
-                <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto">
-                    <div class="bg-[#f0fdf4] w-full rounded-[1.5rem] shadow-sm border border-green-200 flex flex-col pt-6 pb-8 px-6 relative animate-slide-up mb-auto">
+                <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
+                    <div class="bg-[#f0fdf4] w-full rounded-[1.5rem] shadow-sm border border-green-200 flex flex-col pt-6 pb-8 px-6 relative animate-slide-up shrink-0 mb-auto">
                         <div class="flex justify-between items-start mb-6">
                             <div class="animate-pop">${icons.check}</div>
                             <span class="${srsBadgeStyle} px-3 py-1 rounded-l-full font-black text-xs absolute right-0 top-6 shadow-sm">${pInfo.displayTag}</span>
@@ -25436,10 +25487,10 @@
                         </div>
                     </div>
 
-                    <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up mt-4">
+                    <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up shrink-0 mt-4">
                         
                         <div class="flex gap-2 mb-4 border-b border-slate-50 pb-4">
-                            <button onclick="window.playAudio('${audioSentence}', 0.55)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 0.6)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.turtle}
                                 <span class="text-[10px] font-bold mt-1">慢速</span>
                             </button>
@@ -25447,7 +25498,7 @@
                                 ${icons.volume}
                                 <span class="text-[10px] font-bold mt-1">預設語速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 1.35)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 1.25)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.zap}
                                 <span class="text-[10px] font-bold mt-1">日本人語速</span>
                             </button>
@@ -25531,8 +25582,15 @@
         const modal = document.getElementById('dict-modal');
         const modalContent = document.getElementById('dict-modal-content');
 
-        window.openModal = function() {
-            const word = window.state.currentWord;
+        window.openModal = function(wordId) {
+            let word = window.state.currentWord;
+            
+            if (wordId !== undefined) {
+                word = APP_DICTIONARY.find(w => w.id === wordId) || word;
+            }
+            
+            if (!word) return;
+
             document.getElementById('modal-word').innerHTML = generateRuby(word.kanji, word.kana);
             document.getElementById('modal-pos').innerText = word.pos;
             document.getElementById('modal-level').innerText = word.level;
