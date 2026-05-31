@@ -147,7 +147,7 @@
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
-       {
+{
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24384,6 +24384,7 @@
             }
 
             utterance.rate = rate;
+
             window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
             window.speechSynthesis.speak(utterance);
         }
@@ -25490,7 +25491,7 @@
                     <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up shrink-0 mt-4">
                         
                         <div class="flex gap-2 mb-4 border-b border-slate-50 pb-4">
-                            <button onclick="window.playAudio('${audioSentence}', 0.6)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 0.4)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.turtle}
                                 <span class="text-[10px] font-bold mt-1">慢速</span>
                             </button>
