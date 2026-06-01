@@ -107,7 +107,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- 全域變數掛載 ---
         window.state = {
@@ -137,13 +137,17 @@
             lastStreakDate: "",
             lastActiveDate: "",
             
-            userProgress: {} 
+            userProgress: {},
+            
+            // 管理員後台專用狀態
+            adminStudentsList: null,
+            confirmDeleteId: null
         };
 
         let db, auth, appId;
         let currentUserAuth = null;
         let currentStudentId = null;
-        let unsubscribeSnapshot = null; // 用於儲存監聽器的取消函式
+        let unsubscribeSnapshot = null;
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
@@ -24345,7 +24349,7 @@
 
         // --- ULTIMATE VOICE API (Google Cloud Fallback) ---
         window.currentAudio = null;
-        window.playAudio = function(text, rate = 0.85) {
+        window.playAudio = function(text, rate = 0.95) {
             if (!text) return;
             if (window.currentAudio) {
                 window.currentAudio.pause();
@@ -24384,7 +24388,6 @@
             }
 
             utterance.rate = rate;
-
             window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
             window.speechSynthesis.speak(utterance);
         }
@@ -24521,7 +24524,6 @@
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', studentIdVal);
                     
                     // 設定雙向即時監聽 (onSnapshot) 取代單次讀取 (getDoc)
-                    // 這樣只要任何一端有改變進度，當前頁面就會瞬間同步更新！
                     if (unsubscribeSnapshot) {
                         unsubscribeSnapshot(); // 清除之前的監聽器
                     }
@@ -24530,9 +24532,34 @@
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
-                            // 只有在非學習狀態下，或是遠端資料比本地新時才強烈覆蓋 (避免打字打一半被洗掉)
-                            // 這裡為了確保兩邊即時同步，我們做狀態合併
+                            // 判斷雲端傳來的單字是否有更換
+                            let wordChanged = false;
+                            const currentId = window.state.currentWord ? window.state.currentWord.id : null;
+                            const newId = data.currentWord ? data.currentWord.id : null;
+                            if (currentId !== newId) wordChanged = true;
+                            
+                            // 保留純本地的 UI 狀態，避免被雲端覆蓋導致畫面跳轉與打字中斷
+                            const localView = window.state.view;
+                            const localInputValue = window.state.inputValue;
+                            const localNotebookTab = window.state.notebookTab;
+                            
                             window.state = { ...window.state, ...data };
+                            window.state.view = localView;
+                            window.state.inputValue = localInputValue;
+                            window.state.notebookTab = localNotebookTab;
+                            
+                            // 若別的裝置切換了單字，本地自動跟上並清空輸入框
+                            if (wordChanged) {
+                                window.state.inputValue = "";
+                                window.state.mistakes = 0;
+                                if (window.state.view === 'success') {
+                                    window.state.view = 'study'; // 從結算畫面自動跳入下一題
+                                }
+                                // 若雲端進度已結束 (currentWord 為 null)，把還在測驗畫面的裝置踢回首頁
+                                if (!data.currentWord && window.state.view === 'study') {
+                                    window.state.view = 'dashboard';
+                                }
+                            }
                             
                             const today = getLogicalDateStr();
                             const yesterday = getYesterdayStr();
@@ -24541,6 +24568,9 @@
                             if (window.state.lastActiveDate !== today) {
                                 window.state.completedToday = 0;
                                 window.state.justCompletedTest = false;
+                                window.state.currentWord = null;
+                                window.state.sessionQueue = [];
+                                window.state.historyQueue = [];
                                 
                                 if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
                                     if (window.state.streakDays > 0) {
@@ -24558,8 +24588,15 @@
                             // 若當前在 loading，自動切換至 dashboard
                             if (window.state.view === 'loading') {
                                 window.state.view = 'dashboard';
+                                window.render();
+                            } else if (window.state.view !== 'study' || wordChanged) {
+                                window.render(); // 只有畫面/單字真的有變時才整體重繪
+                            } else if (window.state.view === 'study') {
+                                // 在學習畫面且單字沒變，只偷偷更新頂部進度數字，完全不干擾打字
+                                const activeGoal = window.state.isTesting ? window.state.testTotal : (window.state.isMakeUp ? 20 : window.state.dailyGoal);
+                                const progressSpan = document.querySelector('.text-sky-600.font-black span.text-sm');
+                                if(progressSpan) progressSpan.innerText = `${window.state.completedToday}/${activeGoal}`;
                             }
-                            window.render();
                         } else {
                             // 帳號不存在
                             currentStudentId = null;
@@ -24609,7 +24646,9 @@
 
             if (studentIdVal === 'admin888') {
                 window.state.view = 'admin';
+                window.state.adminStudentsList = null; // 重置清單狀態
                 window.render();
+                window.fetchStudentsList(); // 開始抓取所有帳號資料
                 return;
             }
 
@@ -24636,7 +24675,7 @@
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
-                // 儲存進度時以 merge 方式更新
+                // 儲存進度時以 merge 方式更新，包含學習列隊狀態
                 await setDoc(docRef, {
                     targetLevel: window.state.targetLevel,
                     dailyGoal: window.state.dailyGoal,
@@ -24647,6 +24686,11 @@
                     lastStreakDate: window.state.lastStreakDate || "",
                     hasTested: window.state.hasTested,
                     userProgress: window.state.userProgress,
+                    sessionQueue: window.state.sessionQueue || [],
+                    historyQueue: window.state.historyQueue || [],
+                    currentWord: window.state.currentWord || null,
+                    isTesting: window.state.isTesting || false,
+                    isMakeUp: window.state.isMakeUp || false,
                     lastActiveDate: window.state.lastActiveDate || getLogicalDateStr()
                 }, { merge: true });
             } catch (e) {
@@ -24726,20 +24770,50 @@
         }
 
         function renderAdmin() {
+            let listHtml = '';
+            
+            if (window.state.adminStudentsList === null) {
+                listHtml = '<div class="text-center text-slate-400 font-bold py-8">載入帳號資料中...</div>';
+            } else if (window.state.adminStudentsList.length === 0) {
+                listHtml = '<div class="text-center text-slate-400 font-bold py-8">目前無已發行的帳號</div>';
+            } else {
+                listHtml = window.state.adminStudentsList.map(s => {
+                    let streak = s.streakDays || 0;
+                    let isConfirming = window.state.confirmDeleteId === s.id;
+                    
+                    return `
+                        <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center relative animate-slide-up mb-3">
+                            <div class="flex flex-col">
+                                <span class="font-black text-slate-800 text-lg tracking-wide">${s.studentId}</span>
+                                <span class="text-xs font-bold text-orange-500 mt-1 flex items-center gap-1">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c0 0-4 4-4 8 0 2 1 4 3 5-1-1-1-2-1-3 0 0 4-4 4-4s-2 3-2 5c0 2 1.5 3.5 3 4 1-1 1.5-2.5 1.5-4 0-4-5-11-5-11Z"/></svg>
+                                    連續學習 ${streak} 天
+                                </span>
+                            </div>
+                            <button onclick="window.deleteStudentAccount('${s.id}')" class="shrink-0 px-4 py-2 rounded-xl text-xs font-black transition-all shadow-sm ${isConfirming ? 'bg-red-500 text-white' : 'bg-red-50 text-red-500 hover:bg-red-100 active:scale-95'}">
+                                ${isConfirming ? '確定刪除?' : '刪除'}
+                            </button>
+                        </div>
+                    `;
+                }).join('');
+            }
+
             container.innerHTML = `
-                <div class="flex-1 flex flex-col items-center justify-center bg-white p-8 animate-slide-up relative overflow-y-auto">
+                <div class="flex-1 flex flex-col bg-slate-50 h-full overflow-hidden animate-slide-up relative z-40">
                     <div class="absolute inset-0 opacity-10 pointer-events-none" style="background-image: radial-gradient(circle at center, #818cf8 2px, transparent 2px); background-size: 24px 24px;"></div>
                     
-                    <div class="z-10 flex flex-col w-full max-w-xs mt-auto mb-auto">
-                        <div class="flex items-center justify-between mb-8">
-                            <button onclick="window.state.view='login'; window.render();" class="p-2 text-slate-400 hover:text-indigo-500 active:scale-90 transition-transform">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
-                            </button>
-                            <h1 class="text-2xl font-black text-indigo-600 tracking-tight">管理員後台</h1>
-                            <div class="w-10"></div>
-                        </div>
-                        
-                        <div class="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 shadow-sm flex flex-col items-center mb-6">
+                    <!-- Header -->
+                    <div class="px-4 py-4 flex items-center justify-between bg-white shadow-sm z-20 shrink-0">
+                        <button onclick="window.state.view='login'; window.render();" class="p-2 text-slate-400 hover:text-indigo-500 active:scale-90 transition-transform">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+                        </button>
+                        <h1 class="text-xl font-black text-indigo-600 tracking-tight">管理員後台</h1>
+                        <div class="w-10"></div>
+                    </div>
+                    
+                    <div class="flex-1 overflow-y-auto p-4 z-10 space-y-6 pb-12">
+                        <!-- Create Account Section -->
+                        <div class="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 shadow-sm flex flex-col items-center">
                             <p class="text-slate-600 font-bold mb-4 text-center text-sm">請輸入要派發的新學生帳號<br>(例如: std-2026-xyz)</p>
                             <input type="text" id="new-student-id" class="w-full text-center text-xl font-black p-3 bg-white border-2 border-indigo-200 rounded-2xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-200 transition-all mb-4 text-indigo-700 outline-none" placeholder="自訂學生帳號">
                             
@@ -24747,6 +24821,17 @@
                                 發行帳號
                             </button>
                             <p id="admin-msg" class="font-bold mt-4 hidden px-4 py-2 rounded-lg text-sm border text-center w-full"></p>
+                        </div>
+
+                        <!-- Account List Section -->
+                        <div>
+                            <div class="flex justify-between items-end mb-3 px-2">
+                                <h2 class="text-lg font-black text-slate-700 tracking-wide">已發行帳號清單</h2>
+                                <span class="text-xs font-bold text-slate-400 bg-slate-200 px-2 py-1 rounded-full">${window.state.adminStudentsList ? window.state.adminStudentsList.length : 0} 個</span>
+                            </div>
+                            <div class="space-y-3">
+                                ${listHtml}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -24783,13 +24868,17 @@
                 } else {
                     await setDoc(docRef, {
                         studentId: newId,
-                        createdAt: new Date().toISOString()
+                        createdAt: new Date().toISOString(),
+                        streakDays: 0
                     });
                     
                     input.value = "";
                     msgBox.className = "font-bold mt-4 px-4 py-2 rounded-lg text-sm border text-center w-full text-green-600 bg-green-50 border-green-200";
                     msgBox.innerText = `帳號 ${newId} 建立成功！`;
                     msgBox.classList.remove('hidden');
+                    
+                    // 成功發行後，立即刷新下方的帳號清單
+                    window.fetchStudentsList();
                 }
             } catch (e) {
                 console.error("Create account failed", e);
@@ -24798,6 +24887,67 @@
                 msgBox.classList.remove('hidden');
             }
         }
+
+        window.fetchStudentsList = async function() {
+            if (!db) return;
+            try {
+                const querySnapshot = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'students'));
+                const list = [];
+                querySnapshot.forEach((doc) => {
+                    list.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // 依照連勝天數 (高到低) 排序
+                list.sort((a, b) => (b.streakDays || 0) - (a.streakDays || 0));
+                window.state.adminStudentsList = list;
+                
+                if (window.state.view === 'admin') window.render();
+            } catch (e) {
+                console.error("Error fetching students:", e);
+                window.state.adminStudentsList = [];
+                if (window.state.view === 'admin') window.render();
+            }
+        };
+
+        window.deleteStudentAccount = async function(id) {
+            // 安全防呆機制：需點擊第二次才真正刪除
+            if (window.state.confirmDeleteId !== id) {
+                window.state.confirmDeleteId = id;
+                window.render();
+                
+                // 3秒後自動取消確認狀態
+                setTimeout(() => {
+                    if (window.state.confirmDeleteId === id) {
+                        window.state.confirmDeleteId = null;
+                        if (window.state.view === 'admin') window.render();
+                    }
+                }, 3000);
+                return;
+            }
+            
+            // 執行資料庫刪除
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id));
+                window.state.confirmDeleteId = null;
+                await window.fetchStudentsList(); // 重新抓取並刷新清單
+                
+                // 顯示成功提示
+                const msgBox = document.getElementById('admin-msg');
+                if(msgBox) {
+                    msgBox.className = "font-bold mt-4 px-4 py-2 rounded-lg text-sm border text-center w-full text-green-600 bg-green-50 border-green-200";
+                    msgBox.innerText = `帳號已成功刪除！`;
+                    msgBox.classList.remove('hidden');
+                }
+            } catch(e) {
+                console.error("Error deleting student:", e);
+                const msgBox = document.getElementById('admin-msg');
+                if(msgBox) {
+                    msgBox.className = "font-bold mt-4 px-4 py-2 rounded-lg text-sm border text-center w-full text-red-500 bg-red-50 border-red-100";
+                    msgBox.innerText = `刪除失敗，請稍後再試！`;
+                    msgBox.classList.remove('hidden');
+                }
+            }
+        };
 
         function renderWeeklyTrophies() {
             let dow = new Date(Date.now() - 3 * 3600 * 1000).getDay();
@@ -24862,7 +25012,27 @@
             const levelOptions = levels.map(l => `<option value="${l}" ${window.state.targetLevel === l ? 'selected' : ''}>${l} 程度</option>`).join('');
 
             let actionButtonHtml = "";
-            if (!window.state.hasTested) {
+            const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
+
+            if (hasOngoingSession) {
+                let resumeText = "繼續學習";
+                let resumeIcon = "▶️";
+                if (window.state.isTesting) { resumeText = "繼續測驗"; resumeIcon = "📝"; }
+                else if (window.state.isMakeUp) { resumeText = "繼續補考"; resumeIcon = "🚑"; }
+                
+                actionButtonHtml = `
+                    <div class="text-center mb-6">
+                        <h2 class="text-2xl font-black text-slate-800">學習中斷</h2>
+                        <p class="text-slate-500 font-bold mt-1">您有尚未完成的${window.state.isTesting ? '測驗' : '進度'}</p>
+                    </div>
+                    <button onclick="window.resumeSession()" class="w-full bg-blue-500 hover:bg-blue-600 text-white text-xl font-black py-4 rounded-[1.5rem] shadow-[0_6px_0_#3b82f6] active:shadow-[0_0px_0_#3b82f6] active:translate-y-[6px] transition-all flex items-center justify-center gap-2 mb-4">
+                        ${resumeIcon} ${resumeText}
+                    </button>
+                    <button onclick="window.cancelSession()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-500 text-lg font-bold py-3 rounded-[1.5rem] active:scale-95 transition-all shadow-sm">
+                        放棄本次進度
+                    </button>
+                `;
+            } else if (!window.state.hasTested) {
                 actionButtonHtml = `
                     <div class="text-center mb-6">
                         <h2 class="text-2xl font-black text-slate-800">程度檢測</h2>
@@ -24978,6 +25148,20 @@
             window.render();
         }
 
+        window.resumeSession = function() {
+            window.unlockAudio();
+            window.state.view = 'study';
+            window.render();
+        }
+
+        window.cancelSession = function() {
+            window.state.currentWord = null;
+            window.state.sessionQueue = [];
+            window.state.historyQueue = [];
+            window.saveProgress();
+            window.render();
+        }
+
         window.startTest = function() {
             window.unlockAudio();
             window.state.sessionQueue = generateTestQueue(window.state.targetLevel);
@@ -25044,6 +25228,7 @@
                         }
                     }
                 }
+                window.state.currentWord = null; 
                 window.state.view = 'completion';
                 window.saveProgress();
                 window.render();
@@ -25054,6 +25239,7 @@
             window.state.inputValue = "";
             window.state.mistakes = 0;
             window.state.view = 'study';
+            window.saveProgress(); 
             window.render();
         }
 
@@ -25085,7 +25271,7 @@
             window.state.inputValue = "";
             window.state.mistakes = 0;
             window.state.view = 'study';
-            window.saveProgress();
+            window.saveProgress(); 
             window.render();
         }
 
@@ -25154,7 +25340,7 @@
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3 relative animate-slide-up">
                         <div class="flex justify-between items-start">
                             <div class="flex gap-4 items-center">
-                                <button onclick="window.playAudio('${w.kana}', 0.85)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${w.kana}', 0.95)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     ${icons.volume}
                                 </button>
                                 <div>
@@ -25255,7 +25441,7 @@
                         </div>
                     </div>
 
-                    <div class="w-full relative mt-auto mb-4">
+                    <div class="w-full relative shrink-0 mt-auto mb-4">
                         <input type="text" id="kana-input" 
                             class="w-full text-center text-3xl font-black p-4 bg-white shadow-sm border border-sky-200 rounded-2xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition-all placeholder-slate-300 text-indigo-600"
                             placeholder="輸入假名" 
@@ -25381,7 +25567,7 @@
                 evalSRS(); 
                 
                 const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
-                window.playAudio(audioSentence, 0.85);
+                window.playAudio(audioSentence, 0.95);
                 
                 window.state.view = 'success';
                 window.render();
@@ -25457,7 +25643,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
@@ -25480,7 +25666,7 @@
                         <div class="mt-6 flex flex-col items-center justify-center w-full">
                             <div class="flex items-center gap-3 mb-2 justify-center">
                                 <div class="text-3xl text-indigo-600">${generateRuby(word.kanji, word.kana)}</div>
-                                <button onclick="window.playAudio('${word.kana}', 0.85)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${word.kana}', 0.95)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
                                 </button>
                             </div>
@@ -25491,15 +25677,15 @@
                     <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up shrink-0 mt-4">
                         
                         <div class="flex gap-2 mb-4 border-b border-slate-50 pb-4">
-                            <button onclick="window.playAudio('${audioSentence}', 0.4)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 0.5)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.turtle}
                                 <span class="text-[10px] font-bold mt-1">慢速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 0.85)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
+                            <button onclick="window.playAudio('${audioSentence}', 0.95)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
                                 ${icons.volume}
                                 <span class="text-[10px] font-bold mt-1">預設語速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 1.25)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 1.35)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.zap}
                                 <span class="text-[10px] font-bold mt-1">日本人語速</span>
                             </button>
@@ -25606,8 +25792,8 @@
             
             const audioSentence = word.sentenceKanji.split(word.kanji).join(word.kana);
 
-            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 0.85);
-            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 0.85);
+            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 0.95);
+            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 0.95);
 
             modal.classList.remove('hidden');
             setTimeout(() => {
