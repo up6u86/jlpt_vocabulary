@@ -24273,7 +24273,7 @@
    "sentenceKanji": "カイロは歴史の古い都市です。",
    "sentenceKana": "かいろはれきしのふるいとしです。",
    "sentenceMeaning": "<u>開羅</u>是歷史悠久的都市。"
- }      
+ }
         ];
 
         // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
@@ -24991,20 +24991,22 @@
 
             const jpDays = ['月', '火', '水', '木', '金', '土', '日'];
             
-            let html = `<div class="flex flex-col items-center gap-1.5 w-full max-w-[280px]">
+            // 將外層容器改為不強迫滿版，讓進度條緊密貼合並居中
+            let html = `<div class="flex flex-col items-center gap-1 w-full max-w-[280px]">
                 <!-- 日文星期標籤列 -->
-                <div class="flex justify-between w-full px-[6px]">`;
+                <div class="flex px-1.5">`;
                 
             for (let i = 0; i < 7; i++) {
                 let isToday = i === shiftedDow;
                 let textColor = isToday ? 'text-indigo-500' : 'text-slate-400';
                 if (isActive[i]) textColor = 'text-yellow-500';
-                html += `<div class="w-8 flex justify-center"><span class="text-[11px] font-black ${textColor} tracking-widest">${jpDays[i]}</span></div>`;
+                // 標籤寬度固定與下方天數一致 (w-8)，確保上下完美對齊
+                html += `<div class="w-8 flex justify-center"><span class="text-[11px] font-black ${textColor}">${jpDays[i]}</span></div>`;
             }
                 
             html += `</div>
                 <!-- 無縫膠囊進度條 -->
-                <div class="bg-slate-100 p-1.5 rounded-[1.5rem] flex relative shadow-inner w-full justify-between">`;
+                <div class="bg-slate-100 p-1.5 rounded-[1.5rem] flex relative shadow-inner">`;
 
             for (let i = 0; i < 7; i++) {
                 let active = isActive[i];
@@ -25014,7 +25016,8 @@
                 
                 let bgClass = 'bg-transparent text-slate-300';
                 if (active) {
-                    bgClass = 'bg-yellow-400 text-white shadow-sm z-10';
+                    // 移除獨立方塊的 shadow-sm，確保相鄰黃底的無縫接合
+                    bgClass = 'bg-yellow-400 text-white z-10';
                 } else if (isToday) {
                     bgClass = 'bg-white text-slate-300 rounded-full shadow-sm z-10 border border-slate-200';
                 }
@@ -25027,7 +25030,7 @@
                     if (!leftActive && !rightActive) roundedClass = 'rounded-full'; 
                     else if (!leftActive && rightActive) roundedClass = 'rounded-l-full'; 
                     else if (leftActive && !rightActive) roundedClass = 'rounded-r-full'; 
-                    else roundedClass = ''; 
+                    else roundedClass = ''; // 中間的天數保持直角，實現無縫連接
                 }
 
                 let iconHtml = '';
@@ -25040,9 +25043,9 @@
                         iconHtml = icons.crown; 
                     }
                 } else if (!isToday) {
-                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200"></div>`; // 沒練習的灰底點點
+                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200 transition-colors"></div>`; // 沒練習的灰底點點
                 } else {
-                    iconHtml = `<div class="w-3 h-3 rounded-full bg-slate-200"></div>`;
+                    iconHtml = `<div class="w-3 h-3 rounded-full bg-slate-200 transition-colors"></div>`;
                 }
 
                 let marker = isToday ? `<div class="absolute -bottom-2.5 w-1.5 h-1.5 bg-purple-400 rounded-full shadow-sm z-20"></div>` : '';
