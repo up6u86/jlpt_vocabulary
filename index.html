@@ -24323,7 +24323,7 @@
         }
         function getYesterdayStr() { return getLogicalDateStr(-1); }
 
-        // --- AUDIO UNLOCK MECHANISM (針對手機瀏覽器阻擋) ---
+        // --- AUDIO UNLOCK MECHANISM ---
         window.appAudioUnlocked = false;
         window.unlockAudio = function() {
             if (window.appAudioUnlocked) return;
@@ -24347,9 +24347,38 @@
             }
         };
 
-        // --- ULTIMATE VOICE API (Google Cloud Fallback) ---
+        // --- ULTIMATE VOICE API (更自然的原生語音優先) ---
         window.currentAudio = null;
-        window.playAudio = function(text, rate = 0.95) {
+        window.currentUtterance = null;
+        
+        function playLocalTTS(text, rate) {
+            if (!('speechSynthesis' in window)) return false;
+            const voices = window.speechSynthesis.getVoices();
+            const jaVoices = voices.filter(v => v.lang.includes('ja') || v.lang.includes('JP'));
+            if (jaVoices.length === 0) return false;
+
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'ja-JP';
+            
+            // 優先挑選最高品質的自然發音引擎
+            const premiumVoice = jaVoices.find(v => 
+                v.name.includes('Premium') || 
+                v.name.includes('Siri') || 
+                v.name.includes('Otoya') || 
+                v.name.includes('Kyoko') ||
+                v.name.includes('Google') ||
+                v.name.includes('Nanami')
+            );
+            utterance.voice = premiumVoice || jaVoices[0];
+            utterance.rate = rate;
+
+            window.currentUtterance = utterance; 
+            window.speechSynthesis.speak(utterance);
+            return true;
+        }
+
+        window.playAudio = function(text, rate = 1.05) {
             if (!text) return;
             if (window.currentAudio) {
                 window.currentAudio.pause();
@@ -24358,39 +24387,25 @@
             }
             if ('speechSynthesis' in window) window.speechSynthesis.cancel();
             
-            try {
-                const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=${encodeURIComponent(text)}`;
-                const audio = new Audio(url);
-                window.currentAudio = audio;
-                
-                audio.defaultPlaybackRate = rate;
-                audio.playbackRate = rate;
-                audio.addEventListener('loadedmetadata', () => { audio.playbackRate = rate; });
-                audio.addEventListener('canplay', () => { audio.playbackRate = rate; });
+            const playedLocally = playLocalTTS(text, rate);
+            
+            if (!playedLocally) {
+                try {
+                    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=${encodeURIComponent(text)}`;
+                    const audio = new Audio(url);
+                    window.currentAudio = audio;
+                    
+                    audio.defaultPlaybackRate = rate;
+                    audio.playbackRate = rate;
+                    audio.addEventListener('loadedmetadata', () => { audio.playbackRate = rate; });
+                    audio.addEventListener('canplay', () => { audio.playbackRate = rate; });
 
-                audio.play().catch(err => { fallbackLocalTTS(text, rate); });
-            } catch (error) {
-                fallbackLocalTTS(text, rate);
+                    audio.play().catch(err => console.warn("Audio fallback error:", err));
+                } catch (error) {
+                    console.warn("TTS Error:", error);
+                }
             }
         };
-
-        function fallbackLocalTTS(text, rate) {
-            if (!('speechSynthesis' in window)) return;
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'ja-JP';
-            
-            const voices = window.speechSynthesis.getVoices();
-            const jaVoices = voices.filter(v => v.lang.includes('ja'));
-            if (jaVoices.length > 0) {
-                const premiumVoice = jaVoices.find(v => v.name.includes('Premium') || v.name.includes('Siri') || v.name.includes('Otoya') || v.name.includes('Kyoko'));
-                utterance.voice = premiumVoice || jaVoices[0];
-            }
-
-            utterance.rate = rate;
-            window.currentUtterance = utterance; // 防止 iOS 垃圾回收機制中斷語音
-            window.speechSynthesis.speak(utterance);
-        }
 
         if ('speechSynthesis' in window) {
             window.speechSynthesis.getVoices();
@@ -24497,10 +24512,8 @@
                 }
                 currentUserAuth = auth.currentUser;
                 
-                // 檢查 LocalStorage 是否有記住的帳號
                 const savedStudentId = localStorage.getItem('sandy_jp_student_id');
                 if (savedStudentId) {
-                    // 若有記錄，自動跳過手動登入畫面，直接進行登入
                     currentStudentId = savedStudentId;
                     await processLogin(savedStudentId);
                 } else {
@@ -24514,7 +24527,6 @@
             }
         }
 
-        // 將登入邏輯獨立出來，方便手動登入與自動登入共用
         async function processLogin(studentIdVal) {
             window.state.view = 'loading';
             window.render();
@@ -24523,22 +24535,24 @@
                 try {
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', studentIdVal);
                     
-                    // 設定雙向即時監聽 (onSnapshot) 取代單次讀取 (getDoc)
                     if (unsubscribeSnapshot) {
-                        unsubscribeSnapshot(); // 清除之前的監聽器
+                        unsubscribeSnapshot(); 
                     }
                     
                     unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
-                            // 判斷雲端傳來的單字是否有更換
+                            // 防呆：忽略比本地舊的伺服器回音，防止「回到上一題」被強制拉回「下一題」的作答畫面
+                            if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime < window.state.lastUpdateTime) {
+                                return;
+                            }
+                            
                             let wordChanged = false;
                             const currentId = window.state.currentWord ? window.state.currentWord.id : null;
                             const newId = data.currentWord ? data.currentWord.id : null;
                             if (currentId !== newId) wordChanged = true;
                             
-                            // 保留純本地的 UI 狀態，避免被雲端覆蓋導致畫面跳轉與打字中斷
                             const localView = window.state.view;
                             const localInputValue = window.state.inputValue;
                             const localNotebookTab = window.state.notebookTab;
@@ -24548,14 +24562,12 @@
                             window.state.inputValue = localInputValue;
                             window.state.notebookTab = localNotebookTab;
                             
-                            // 若別的裝置切換了單字，本地自動跟上並清空輸入框
                             if (wordChanged) {
                                 window.state.inputValue = "";
                                 window.state.mistakes = 0;
                                 if (window.state.view === 'success') {
-                                    window.state.view = 'study'; // 從結算畫面自動跳入下一題
+                                    window.state.view = 'study'; 
                                 }
-                                // 若雲端進度已結束 (currentWord 為 null)，把還在測驗畫面的裝置踢回首頁
                                 if (!data.currentWord && window.state.view === 'study') {
                                     window.state.view = 'dashboard';
                                 }
@@ -24564,13 +24576,17 @@
                             const today = getLogicalDateStr();
                             const yesterday = getYesterdayStr();
                             
-                            // 若是今天第一次登入，處理每日重置邏輯
                             if (window.state.lastActiveDate !== today) {
-                                window.state.completedToday = 0;
-                                window.state.justCompletedTest = false;
-                                window.state.currentWord = null;
-                                window.state.sessionQueue = [];
-                                window.state.historyQueue = [];
+                                const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
+                                
+                                // 保護機制：只有在「沒有正在進行的測驗時」，跨日才清空進度
+                                if (!hasOngoingSession) {
+                                    window.state.completedToday = 0;
+                                    window.state.justCompletedTest = false;
+                                    window.state.currentWord = null;
+                                    window.state.sessionQueue = [];
+                                    window.state.historyQueue = [];
+                                }
                                 
                                 if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
                                     if (window.state.streakDays > 0) {
@@ -24585,20 +24601,17 @@
                                 window.saveProgress();
                             }
                             
-                            // 若當前在 loading，自動切換至 dashboard
                             if (window.state.view === 'loading') {
                                 window.state.view = 'dashboard';
                                 window.render();
                             } else if (window.state.view !== 'study' || wordChanged) {
-                                window.render(); // 只有畫面/單字真的有變時才整體重繪
+                                window.render(); 
                             } else if (window.state.view === 'study') {
-                                // 在學習畫面且單字沒變，只偷偷更新頂部進度數字，完全不干擾打字
                                 const activeGoal = window.state.isTesting ? window.state.testTotal : (window.state.isMakeUp ? 20 : window.state.dailyGoal);
                                 const progressSpan = document.querySelector('.text-sky-600.font-black span.text-sm');
                                 if(progressSpan) progressSpan.innerText = `${window.state.completedToday}/${activeGoal}`;
                             }
                         } else {
-                            // 帳號不存在
                             currentStudentId = null;
                             localStorage.removeItem('sandy_jp_student_id');
                             if (unsubscribeSnapshot) unsubscribeSnapshot();
@@ -24633,7 +24646,7 @@
         }
 
         window.handleLogin = async function() {
-            window.unlockAudio(); // 確保語音解鎖
+            window.unlockAudio(); 
             const idInput = document.getElementById('login-id');
             const errorMsg = document.getElementById('login-error');
             const studentIdVal = idInput.value.trim();
@@ -24646,22 +24659,19 @@
 
             if (studentIdVal === 'admin888') {
                 window.state.view = 'admin';
-                window.state.adminStudentsList = null; // 重置清單狀態
+                window.state.adminStudentsList = null; 
                 window.render();
-                window.fetchStudentsList(); // 開始抓取所有帳號資料
+                window.fetchStudentsList(); 
                 return;
             }
 
             currentStudentId = studentIdVal;
-            // 將帳號存入 LocalStorage，實現自動登入
             localStorage.setItem('sandy_jp_student_id', studentIdVal);
-            
             await processLogin(studentIdVal);
         };
 
         window.handleLogout = function() {
             currentStudentId = null;
-            // 登出時徹底清除 LocalStorage 記錄與斷開監聽
             localStorage.removeItem('sandy_jp_student_id');
             if (unsubscribeSnapshot) {
                 unsubscribeSnapshot();
@@ -24674,8 +24684,8 @@
         window.saveProgress = async function() {
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
+                window.state.lastUpdateTime = Date.now();
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
-                // 儲存進度時以 merge 方式更新，包含學習列隊狀態
                 await setDoc(docRef, {
                     targetLevel: window.state.targetLevel,
                     dailyGoal: window.state.dailyGoal,
@@ -24691,7 +24701,8 @@
                     currentWord: window.state.currentWord || null,
                     isTesting: window.state.isTesting || false,
                     isMakeUp: window.state.isMakeUp || false,
-                    lastActiveDate: window.state.lastActiveDate || getLogicalDateStr()
+                    lastActiveDate: window.state.lastActiveDate || getLogicalDateStr(),
+                    lastUpdateTime: window.state.lastUpdateTime
                 }, { merge: true });
             } catch (e) {
                 console.error("Save Progress Error:", e);
@@ -24877,7 +24888,6 @@
                     msgBox.innerText = `帳號 ${newId} 建立成功！`;
                     msgBox.classList.remove('hidden');
                     
-                    // 成功發行後，立即刷新下方的帳號清單
                     window.fetchStudentsList();
                 }
             } catch (e) {
@@ -24897,7 +24907,6 @@
                     list.push({ id: doc.id, ...doc.data() });
                 });
                 
-                // 依照連勝天數 (高到低) 排序
                 list.sort((a, b) => (b.streakDays || 0) - (a.streakDays || 0));
                 window.state.adminStudentsList = list;
                 
@@ -24910,12 +24919,10 @@
         };
 
         window.deleteStudentAccount = async function(id) {
-            // 安全防呆機制：需點擊第二次才真正刪除
             if (window.state.confirmDeleteId !== id) {
                 window.state.confirmDeleteId = id;
                 window.render();
                 
-                // 3秒後自動取消確認狀態
                 setTimeout(() => {
                     if (window.state.confirmDeleteId === id) {
                         window.state.confirmDeleteId = null;
@@ -24925,13 +24932,11 @@
                 return;
             }
             
-            // 執行資料庫刪除
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id));
                 window.state.confirmDeleteId = null;
-                await window.fetchStudentsList(); // 重新抓取並刷新清單
+                await window.fetchStudentsList(); 
                 
-                // 顯示成功提示
                 const msgBox = document.getElementById('admin-msg');
                 if(msgBox) {
                     msgBox.className = "font-bold mt-4 px-4 py-2 rounded-lg text-sm border text-center w-full text-green-600 bg-green-50 border-green-200";
@@ -24953,39 +24958,78 @@
             let dow = new Date(Date.now() - 3 * 3600 * 1000).getDay();
             let shiftedDow = dow === 0 ? 6 : dow - 1; 
 
+            // 精準計算連勝涵蓋的日期範圍
+            let todayStr = getLogicalDateStr();
+            let lastStr = window.state.lastStreakDate;
+            let daysSinceLastStreak = 999;
+            if (lastStr) {
+                let t = new Date(todayStr);
+                let l = new Date(lastStr);
+                daysSinceLastStreak = Math.round((t - l) / 86400000);
+            }
+
+            let isActive = [];
+            for (let i = 0; i < 7; i++) {
+                let offsetFromToday = shiftedDow - i;
+                
+                if (offsetFromToday > 0) { // 過去的天數
+                    isActive[i] = (offsetFromToday >= daysSinceLastStreak) && (offsetFromToday < daysSinceLastStreak + window.state.streakDays);
+                } else if (offsetFromToday === 0) { // 今天
+                    isActive[i] = window.state.completedToday >= window.state.dailyGoal && !window.state.justCompletedTest;
+                } else { // 未來的天數
+                    isActive[i] = false;
+                }
+            }
+
             let html = `<div class="flex items-center gap-3">
-                <div class="bg-slate-100 p-2 rounded-full flex gap-1 relative shadow-inner">`;
+                <div class="bg-slate-100 p-1.5 rounded-full flex relative shadow-inner">`;
 
             for (let i = 0; i < 7; i++) {
-                let isPast = i < shiftedDow;
+                let active = isActive[i];
                 let isToday = i === shiftedDow;
+                let isMakeUpDay = (i === shiftedDow - 1 && window.state.madeUpYesterday);
                 
-                let bgColor = 'bg-slate-200 text-transparent'; 
-                let iconHtml = '';
-                
-                let coveredByStreak = window.state.streakDays > (shiftedDow - i);
-
-                if (isPast) {
-                    if (coveredByStreak) {
-                        bgColor = 'bg-yellow-400 text-white shadow-md';
-                        if (i === shiftedDow - 1 && window.state.madeUpYesterday) {
-                            iconHtml = ''; 
-                        } else {
-                            iconHtml = icons.crown; 
-                        }
-                    }
+                let bgClass = 'bg-transparent text-slate-300';
+                if (active) {
+                    bgClass = 'bg-yellow-400 text-white shadow-sm z-10';
                 } else if (isToday) {
-                    bgColor = 'bg-yellow-100 text-yellow-300'; 
-                    if (window.state.completedToday >= window.state.dailyGoal && !window.state.justCompletedTest) {
-                        bgColor = 'bg-yellow-400 text-white shadow-md';
-                        iconHtml = window.state.streakDays > 1 ? icons.crown : icons.trophy;
+                    bgClass = 'bg-white text-slate-300 rounded-full shadow-sm z-10 border border-slate-200';
+                }
+
+                // 讓相連的天數邊角變平，形成一條連續的進度條
+                let roundedClass = '';
+                if (active) {
+                    let leftRounded = (i === 0 || !isActive[i-1]);
+                    let rightRounded = (i === 6 || !isActive[i+1]);
+                    
+                    if (leftRounded && rightRounded) {
+                        roundedClass = 'rounded-full';
+                    } else if (leftRounded) {
+                        roundedClass = 'rounded-l-full';
+                    } else if (rightRounded) {
+                        roundedClass = 'rounded-r-full';
                     }
                 }
 
-                let marker = isToday ? `<div class="absolute -bottom-1.5 w-2 h-2 bg-purple-400 rotate-45 transform left-1/2 -translate-x-1/2 rounded-sm shadow-sm z-10"></div>` : '';
+                let iconHtml = '';
+                if (active) {
+                    if (isMakeUpDay) {
+                        iconHtml = ''; // 補考完成後，亮起黃底但不跳獎杯
+                    } else if (isToday) {
+                        iconHtml = window.state.streakDays > 1 ? icons.crown : icons.trophy;
+                    } else {
+                        iconHtml = icons.crown; 
+                    }
+                } else if (!isToday) {
+                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200"></div>`; // 沒練習的天數顯示低調的灰底點點
+                } else {
+                    iconHtml = `<div class="w-3 h-3 rounded-full bg-slate-200"></div>`;
+                }
+
+                let marker = isToday ? `<div class="absolute -bottom-2 w-1.5 h-1.5 bg-purple-400 rounded-full shadow-sm z-20"></div>` : '';
                 
                 html += `
-                    <div class="w-8 h-8 rounded-full ${bgColor} flex items-center justify-center relative transition-colors duration-300">
+                    <div class="w-8 h-8 flex items-center justify-center relative transition-all duration-300 ${bgClass} ${roundedClass}">
                         ${iconHtml}
                         ${marker}
                     </div>`;
@@ -24993,7 +25037,7 @@
 
             const days = ['一','二','三','四','五','六','日'];
             html += `</div>
-                <div class="w-8 h-8 rounded-full bg-slate-100 shadow-sm flex items-center justify-center text-slate-500 font-bold text-xs">
+                <div class="w-8 h-8 rounded-full bg-slate-100 shadow-sm flex items-center justify-center text-slate-500 font-bold text-xs shrink-0">
                     ${days[shiftedDow]}
                 </div>
             </div>`;
@@ -25211,7 +25255,8 @@
                     window.state.dailyGoal = 20; 
                     window.state.completedToday = 0; 
                 } else if (window.state.isMakeUp) {
-                    window.state.streakDays = window.state.savedStreak; 
+                    // 修正：補考完成後，連勝天數需包含「被補考」的昨天，因此要 + 1
+                    window.state.streakDays = (window.state.savedStreak || 0) + 1; 
                     window.state.savedStreak = 0;
                     window.state.lastStreakDate = getYesterdayStr(); 
                     window.state.madeUpYesterday = true;
@@ -25267,10 +25312,9 @@
             }
 
             window.state.currentWord = prevItem.word;
-            window.state.currentWord.countedMistake = false;
-            window.state.inputValue = "";
-            window.state.mistakes = 0;
-            window.state.view = 'study';
+            window.state.inputValue = prevItem.word.kana; 
+            window.state.mistakes = prevItem.wasMistake ? 1 : 0; 
+            window.state.view = 'success'; 
             window.saveProgress(); 
             window.render();
         }
@@ -25340,7 +25384,7 @@
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3 relative animate-slide-up">
                         <div class="flex justify-between items-start">
                             <div class="flex gap-4 items-center">
-                                <button onclick="window.playAudio('${w.kana}', 0.95)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${w.kana}', 1.05)" class="shrink-0 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     ${icons.volume}
                                 </button>
                                 <div>
@@ -25540,7 +25584,6 @@
                 return;
             }
 
-            // 平假名與片假名統一轉為平假名再做比對
             const normVal = toHiragana(val);
             const normTarget = toHiragana(target);
 
@@ -25567,7 +25610,7 @@
                 evalSRS(); 
                 
                 const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
-                window.playAudio(audioSentence, 0.95);
+                window.playAudio(audioSentence, 1.05);
                 
                 window.state.view = 'success';
                 window.render();
@@ -25643,7 +25686,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
@@ -25666,7 +25709,7 @@
                         <div class="mt-6 flex flex-col items-center justify-center w-full">
                             <div class="flex items-center gap-3 mb-2 justify-center">
                                 <div class="text-3xl text-indigo-600">${generateRuby(word.kanji, word.kana)}</div>
-                                <button onclick="window.playAudio('${word.kana}', 0.95)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
+                                <button onclick="window.playAudio('${word.kana}', 1.05)" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 active:scale-90 transition-transform shadow-sm">
                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
                                 </button>
                             </div>
@@ -25677,15 +25720,15 @@
                     <div class="w-full bg-white rounded-3xl shadow-lg border border-slate-100 p-4 animate-slide-up shrink-0 mt-4">
                         
                         <div class="flex gap-2 mb-4 border-b border-slate-50 pb-4">
-                            <button onclick="window.playAudio('${audioSentence}', 0.5)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 0.6)" class="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.turtle}
                                 <span class="text-[10px] font-bold mt-1">慢速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 0.95)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
+                            <button onclick="window.playAudio('${audioSentence}', 1.05)" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm border-2 border-indigo-200">
                                 ${icons.volume}
                                 <span class="text-[10px] font-bold mt-1">預設語速</span>
                             </button>
-                            <button onclick="window.playAudio('${audioSentence}', 1.35)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
+                            <button onclick="window.playAudio('${audioSentence}', 1.45)" class="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-2xl py-2 flex flex-col items-center justify-center active:scale-95 transition-transform shadow-sm">
                                 ${icons.zap}
                                 <span class="text-[10px] font-bold mt-1">日本人語速</span>
                             </button>
@@ -25792,8 +25835,8 @@
             
             const audioSentence = word.sentenceKanji.split(word.kanji).join(word.kana);
 
-            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 0.95);
-            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 0.95);
+            document.getElementById('modal-audio-btn').onclick = () => window.playAudio(audioSentence, 1.05);
+            document.getElementById('modal-word-audio-btn').onclick = () => window.playAudio(word.kana, 1.05);
 
             modal.classList.remove('hidden');
             setTimeout(() => {
