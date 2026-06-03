@@ -24273,7 +24273,7 @@
    "sentenceKanji": "カイロは歴史の古い都市です。",
    "sentenceKana": "かいろはれきしのふるいとしです。",
    "sentenceMeaning": "<u>開羅</u>是歷史悠久的都市。"
- }
+ }      
         ];
 
         // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
@@ -24322,6 +24322,15 @@
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
         function getYesterdayStr() { return getLogicalDateStr(-1); }
+
+        function getDaysDiff(d1Str, d2Str) {
+            if (!d1Str || !d2Str) return 999;
+            const [y1, m1, d1] = d1Str.split('-').map(Number);
+            const [y2, m2, d2] = d2Str.split('-').map(Number);
+            const dt1 = new Date(y1, m1 - 1, d1);
+            const dt2 = new Date(y2, m2 - 1, d2);
+            return Math.round((dt1 - dt2) / 86400000);
+        }
 
         // --- AUDIO UNLOCK MECHANISM ---
         window.appAudioUnlocked = false;
@@ -24958,36 +24967,50 @@
             let dow = new Date(Date.now() - 3 * 3600 * 1000).getDay();
             let shiftedDow = dow === 0 ? 6 : dow - 1; 
 
-            // 精準計算連勝涵蓋的日期範圍
             let todayStr = getLogicalDateStr();
             let lastStr = window.state.lastStreakDate;
-            let daysSinceLastStreak = 999;
-            if (lastStr) {
-                let t = new Date(todayStr);
-                let l = new Date(lastStr);
-                daysSinceLastStreak = Math.round((t - l) / 86400000);
-            }
-
+            
             let isActive = [];
             for (let i = 0; i < 7; i++) {
                 let offsetFromToday = shiftedDow - i;
+                let slotDateStr = getLogicalDateStr(-offsetFromToday);
                 
-                if (offsetFromToday > 0) { // 過去的天數
-                    isActive[i] = (offsetFromToday >= daysSinceLastStreak) && (offsetFromToday < daysSinceLastStreak + window.state.streakDays);
-                } else if (offsetFromToday === 0) { // 今天
+                if (offsetFromToday > 0) { 
+                    let diffFromLastStreak = getDaysDiff(lastStr, slotDateStr);
+                    // 只要該天包含在連勝天數範圍內，就會被點亮
+                    isActive[i] = (diffFromLastStreak >= 0) && (diffFromLastStreak < window.state.streakDays);
+                } else if (offsetFromToday === 0) { 
                     isActive[i] = window.state.completedToday >= window.state.dailyGoal && !window.state.justCompletedTest;
-                } else { // 未來的天數
+                    if (!isActive[i] && lastStr === todayStr && window.state.streakDays > 0) {
+                        isActive[i] = true;
+                    }
+                } else { 
                     isActive[i] = false;
                 }
             }
 
-            let html = `<div class="flex items-center gap-3">
-                <div class="bg-slate-100 p-1.5 rounded-full flex relative shadow-inner">`;
+            const jpDays = ['月', '火', '水', '木', '金', '土', '日'];
+            
+            let html = `<div class="flex flex-col items-center gap-1.5 w-full max-w-[280px]">
+                <!-- 日文星期標籤列 -->
+                <div class="flex justify-between w-full px-[6px]">`;
+                
+            for (let i = 0; i < 7; i++) {
+                let isToday = i === shiftedDow;
+                let textColor = isToday ? 'text-indigo-500' : 'text-slate-400';
+                if (isActive[i]) textColor = 'text-yellow-500';
+                html += `<div class="w-8 flex justify-center"><span class="text-[11px] font-black ${textColor} tracking-widest">${jpDays[i]}</span></div>`;
+            }
+                
+            html += `</div>
+                <!-- 無縫膠囊進度條 -->
+                <div class="bg-slate-100 p-1.5 rounded-[1.5rem] flex relative shadow-inner w-full justify-between">`;
 
             for (let i = 0; i < 7; i++) {
                 let active = isActive[i];
                 let isToday = i === shiftedDow;
-                let isMakeUpDay = (i === shiftedDow - 1 && window.state.madeUpYesterday);
+                let offsetFromToday = shiftedDow - i;
+                let isMakeUpDay = (offsetFromToday === 1 && window.state.madeUpYesterday);
                 
                 let bgClass = 'bg-transparent text-slate-300';
                 if (active) {
@@ -24996,19 +25019,15 @@
                     bgClass = 'bg-white text-slate-300 rounded-full shadow-sm z-10 border border-slate-200';
                 }
 
-                // 讓相連的天數邊角變平，形成一條連續的進度條
-                let roundedClass = '';
+                let roundedClass = 'rounded-full';
                 if (active) {
-                    let leftRounded = (i === 0 || !isActive[i-1]);
-                    let rightRounded = (i === 6 || !isActive[i+1]);
+                    let leftActive = (i > 0 && isActive[i-1]);
+                    let rightActive = (i < 6 && isActive[i+1]);
                     
-                    if (leftRounded && rightRounded) {
-                        roundedClass = 'rounded-full';
-                    } else if (leftRounded) {
-                        roundedClass = 'rounded-l-full';
-                    } else if (rightRounded) {
-                        roundedClass = 'rounded-r-full';
-                    }
+                    if (!leftActive && !rightActive) roundedClass = 'rounded-full'; 
+                    else if (!leftActive && rightActive) roundedClass = 'rounded-l-full'; 
+                    else if (leftActive && !rightActive) roundedClass = 'rounded-r-full'; 
+                    else roundedClass = ''; 
                 }
 
                 let iconHtml = '';
@@ -25021,12 +25040,12 @@
                         iconHtml = icons.crown; 
                     }
                 } else if (!isToday) {
-                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200"></div>`; // 沒練習的天數顯示低調的灰底點點
+                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200"></div>`; // 沒練習的灰底點點
                 } else {
                     iconHtml = `<div class="w-3 h-3 rounded-full bg-slate-200"></div>`;
                 }
 
-                let marker = isToday ? `<div class="absolute -bottom-2 w-1.5 h-1.5 bg-purple-400 rounded-full shadow-sm z-20"></div>` : '';
+                let marker = isToday ? `<div class="absolute -bottom-2.5 w-1.5 h-1.5 bg-purple-400 rounded-full shadow-sm z-20"></div>` : '';
                 
                 html += `
                     <div class="w-8 h-8 flex items-center justify-center relative transition-all duration-300 ${bgClass} ${roundedClass}">
@@ -25035,13 +25054,7 @@
                     </div>`;
             }
 
-            const days = ['一','二','三','四','五','六','日'];
-            html += `</div>
-                <div class="w-8 h-8 rounded-full bg-slate-100 shadow-sm flex items-center justify-center text-slate-500 font-bold text-xs shrink-0">
-                    ${days[shiftedDow]}
-                </div>
-            </div>`;
-
+            html += `</div></div>`;
             return html;
         }
 
@@ -25255,7 +25268,6 @@
                     window.state.dailyGoal = 20; 
                     window.state.completedToday = 0; 
                 } else if (window.state.isMakeUp) {
-                    // 修正：補考完成後，連勝天數需包含「被補考」的昨天，因此要 + 1
                     window.state.streakDays = (window.state.savedStreak || 0) + 1; 
                     window.state.savedStreak = 0;
                     window.state.lastStreakDate = getYesterdayStr(); 
@@ -25485,7 +25497,7 @@
                         </div>
                     </div>
 
-                    <div class="w-full relative shrink-0 mt-auto mb-4">
+                    <div class="w-full relative mt-auto mb-4">
                         <input type="text" id="kana-input" 
                             class="w-full text-center text-3xl font-black p-4 bg-white shadow-sm border border-sky-200 rounded-2xl focus:outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 transition-all placeholder-slate-300 text-indigo-600"
                             placeholder="輸入假名" 
