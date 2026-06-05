@@ -118,6 +118,8 @@
             hasTested: false,   
             isTesting: false,   
             isMakeUp: false,    
+            isExtra: false,     // 標記是否為額外學習
+            extraTarget: 0,     // 記錄額外學習時的目標總數
             justCompletedTest: false,
             
             dailyGoal: 20, 
@@ -151,7 +153,7 @@
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
-             {
+ {
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24317,7 +24319,6 @@
         }
 
         function getLogicalDateStr(offsetDays = 0) {
-            // 凌晨3點換日邏輯
             const d = new Date(Date.now() - 3 * 3600 * 1000 + offsetDays * 24 * 3600 * 1000);
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
@@ -24356,7 +24357,7 @@
             }
         };
 
-        // --- ULTIMATE VOICE API (更自然的原生語音優先) ---
+        // --- ULTIMATE VOICE API ---
         window.currentAudio = null;
         window.currentUtterance = null;
         
@@ -24370,7 +24371,6 @@
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'ja-JP';
             
-            // 優先挑選最高品質的自然發音引擎
             const premiumVoice = jaVoices.find(v => 
                 v.name.includes('Premium') || 
                 v.name.includes('Siri') || 
@@ -24478,7 +24478,6 @@
             shuffle(reviews);
 
             const goalAmount = requestAmount || window.state.dailyGoal;
-            // 確保複習題最多佔 75% (如 20題抽15題舊題，剩下的空間留給全新單字)
             let maxReviews = Math.floor(goalAmount * 0.75);
             let reviewCount = Math.min(reviews.length, maxReviews); 
             let neededNewWordCount = goalAmount - reviewCount;
@@ -24563,7 +24562,6 @@
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
-                            // 防呆：忽略比本地舊的伺服器回音，防止「回到上一題」被強制拉回「下一題」的作答畫面
                             if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime < window.state.lastUpdateTime) {
                                 return;
                             }
@@ -24599,13 +24597,13 @@
                             if (window.state.lastActiveDate !== today) {
                                 const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
                                 
-                                // 保護機制：只有在「沒有正在進行的測驗時」，跨日才清空進度
                                 if (!hasOngoingSession) {
                                     window.state.completedToday = 0;
                                     window.state.justCompletedTest = false;
                                     window.state.currentWord = null;
                                     window.state.sessionQueue = [];
                                     window.state.historyQueue = [];
+                                    window.state.isExtra = false;
                                 }
                                 
                                 if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
@@ -24627,7 +24625,11 @@
                             } else if (window.state.view !== 'study' || wordChanged) {
                                 window.render(); 
                             } else if (window.state.view === 'study') {
-                                const activeGoal = window.state.isTesting ? window.state.testTotal : (window.state.isMakeUp ? 20 : window.state.dailyGoal);
+                                let activeGoal = window.state.dailyGoal;
+                                if (window.state.isTesting) activeGoal = window.state.testTotal;
+                                else if (window.state.isMakeUp) activeGoal = 20;
+                                else if (window.state.isExtra) activeGoal = window.state.extraTarget;
+                                
                                 const progressSpan = document.querySelector('.text-sky-600.font-black span.text-sm');
                                 if(progressSpan) progressSpan.innerText = `${window.state.completedToday}/${activeGoal}`;
                             }
@@ -24721,6 +24723,8 @@
                     currentWord: window.state.currentWord || null,
                     isTesting: window.state.isTesting || false,
                     isMakeUp: window.state.isMakeUp || false,
+                    isExtra: window.state.isExtra || false,
+                    extraTarget: window.state.extraTarget || 0,
                     lastActiveDate: window.state.lastActiveDate || getLogicalDateStr(),
                     lastUpdateTime: window.state.lastUpdateTime
                 }, { merge: true });
@@ -24732,8 +24736,7 @@
         // --- RENDER ENGINE ---
         const container = document.getElementById('view-container');
 
-        // 🔥 【修復重點】將原本的 window.render = function() {...} 
-        // 改為明確的 function render() 宣告，徹底解決 ReferenceError 導致畫面卡住的問題
+        // 明確宣告 render 函式，避免 Syntax Error 和 Reference Error
         function render() {
             if (window.state.view === 'loading') renderLoading();
             else if (window.state.view === 'login') renderLogin();
@@ -24744,7 +24747,7 @@
             else if (window.state.view === 'completion') renderCompletion();
             else if (window.state.view === 'notebook') window.renderNotebook();
         }
-        window.render = render; // 將定義好的 render 指派給 window 讓全域可呼叫
+        window.render = render; 
 
         function renderLoading() {
             container.innerHTML = `
@@ -24991,7 +24994,6 @@
                 
                 if (offsetFromToday > 0) { 
                     let diffFromLastStreak = getDaysDiff(lastStr, slotDateStr);
-                    // 只要該天包含在連勝天數範圍內，就會被點亮
                     isActive[i] = (diffFromLastStreak >= 0) && (diffFromLastStreak < window.state.streakDays);
                 } else if (offsetFromToday === 0) { 
                     isActive[i] = window.state.completedToday >= window.state.dailyGoal && !window.state.justCompletedTest;
@@ -25005,21 +25007,17 @@
 
             const jpDays = ['月', '火', '水', '木', '金', '土', '日'];
             
-            // 將外層容器改為不強迫滿版，讓進度條緊密貼合並居中
             let html = `<div class="flex flex-col items-center gap-1 w-full max-w-[280px]">
-                <!-- 日文星期標籤列 -->
                 <div class="flex px-1.5">`;
                 
             for (let i = 0; i < 7; i++) {
                 let isToday = i === shiftedDow;
                 let textColor = isToday ? 'text-indigo-500' : 'text-slate-400';
                 if (isActive[i]) textColor = 'text-yellow-500';
-                // 標籤寬度固定與下方天數一致 (w-8)，確保上下完美對齊
                 html += `<div class="w-8 flex justify-center"><span class="text-[11px] font-black ${textColor}">${jpDays[i]}</span></div>`;
             }
                 
             html += `</div>
-                <!-- 無縫膠囊進度條 -->
                 <div class="bg-slate-100 p-1.5 rounded-[1.5rem] flex relative shadow-inner">`;
 
             for (let i = 0; i < 7; i++) {
@@ -25030,7 +25028,6 @@
                 
                 let bgClass = 'bg-transparent text-slate-300';
                 if (active) {
-                    // 移除獨立方塊的 shadow-sm，確保相鄰黃底的無縫接合
                     bgClass = 'bg-yellow-400 text-white z-10';
                 } else if (isToday) {
                     bgClass = 'bg-white text-slate-300 rounded-full shadow-sm z-10 border border-slate-200';
@@ -25044,20 +25041,20 @@
                     if (!leftActive && !rightActive) roundedClass = 'rounded-full'; 
                     else if (!leftActive && rightActive) roundedClass = 'rounded-l-full'; 
                     else if (leftActive && !rightActive) roundedClass = 'rounded-r-full'; 
-                    else roundedClass = ''; // 中間的天數保持直角，實現無縫連接
+                    else roundedClass = ''; 
                 }
 
                 let iconHtml = '';
                 if (active) {
                     if (isMakeUpDay) {
-                        iconHtml = ''; // 補考完成後，亮起黃底但不跳獎杯
+                        iconHtml = ''; 
                     } else if (isToday) {
                         iconHtml = window.state.streakDays > 1 ? icons.crown : icons.trophy;
                     } else {
                         iconHtml = icons.crown; 
                     }
                 } else if (!isToday) {
-                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200 transition-colors"></div>`; // 沒練習的灰底點點
+                    iconHtml = `<div class="w-2.5 h-2.5 rounded-full bg-slate-200 transition-colors"></div>`; 
                 } else {
                     iconHtml = `<div class="w-3 h-3 rounded-full bg-slate-200 transition-colors"></div>`;
                 }
@@ -25078,7 +25075,7 @@
         function renderDashboard() {
             const radius = 60;
             const circumference = 2 * Math.PI * radius;
-            const activeGoal = window.state.dailyGoal; 
+            const activeGoal = window.state.isExtra ? window.state.extraTarget : window.state.dailyGoal; 
             const progress = activeGoal > 0 ? (window.state.completedToday / activeGoal) * 100 : 0;
             const offset = circumference - (Math.min(100, progress) / 100) * circumference;
 
@@ -25232,6 +25229,9 @@
             window.state.currentWord = null;
             window.state.sessionQueue = [];
             window.state.historyQueue = [];
+            window.state.isTesting = false;
+            window.state.isMakeUp = false;
+            window.state.isExtra = false;
             window.saveProgress();
             window.render();
         }
@@ -25242,6 +25242,7 @@
             window.state.completedToday = 0;
             window.state.isTesting = true;
             window.state.isMakeUp = false;
+            window.state.isExtra = false;
             window.state.historyQueue = [];
             nextWord();
         }
@@ -25250,6 +25251,7 @@
             window.unlockAudio();
             window.state.isMakeUp = true;
             window.state.isTesting = false;
+            window.state.isExtra = false;
             window.state.sessionQueue = generateDailyQueue(20); 
             window.state.completedToday = 0;
             window.state.historyQueue = [];
@@ -25262,16 +25264,18 @@
             window.state.completedToday = 0;
             window.state.isTesting = false;
             window.state.isMakeUp = false;
+            window.state.isExtra = false;
             window.state.historyQueue = [];
             nextWord();
         }
 
         window.startExtra = function() {
             window.unlockAudio();
-            // 直接產生 5 題加入佇列，不修改 window.state.dailyGoal 以避免影響永久設定
             window.state.sessionQueue = generateDailyQueue(5); 
             window.state.isTesting = false;
             window.state.isMakeUp = false;
+            window.state.isExtra = true;
+            window.state.extraTarget = window.state.completedToday + 5;
             window.state.historyQueue = [];
             nextWord();
         }
@@ -25301,6 +25305,7 @@
                             window.state.lastStreakDate = today;
                         }
                     }
+                    window.state.isExtra = false;
                 }
                 window.state.currentWord = null; 
                 window.state.view = 'completion';
@@ -25484,7 +25489,8 @@
 
             let activeGoal = window.state.dailyGoal;
             if (window.state.isTesting) activeGoal = window.state.testTotal;
-            if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isExtra) activeGoal = window.state.extraTarget;
 
             container.innerHTML = `
                 <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10 shrink-0">
@@ -25594,7 +25600,6 @@
             window.state.mistakes++; 
             window.recordMistakeOnce(); 
             if (window.state.inputValue.length < target.length) {
-                // 自動帶入假名
                 window.state.inputValue = target.substring(0, window.state.inputValue.length + 1);
                 window.renderStudySoftUpdate();
                 window.validateInput(document.getElementById('feedback-hint'));
@@ -25663,29 +25668,27 @@
             const word = window.state.currentWord;
             let p = window.state.userProgress[word.id] || { srsLevel: 0, nextReviewDate: 0, hasBeenSeen: false, totalMistakes: 0, inMyNotes: false, hiddenFromMistakes: false };
             
-            // 判斷是否為「完全沒有錯誤記錄的全新單字」
             let isPerfectNew = (!word.isReview && !word.isSessionRepeat && window.state.mistakes === 0);
             let nextLevel = p.srsLevel;
 
             if (window.state.mistakes > 0) {
-                nextLevel = 0; // 答錯，掉入 5分鐘後 (同回合重考)
+                nextLevel = 0; 
             } else {
                 if (isPerfectNew) {
-                    nextLevel = 10; // 全新單字一次答對 -> 直升 3個月後 (Index 10)
+                    nextLevel = 10; 
                 } else if (word.isSessionRepeat) {
-                    nextLevel = 1;  // 同回合補考答對 -> 1天後 (Index 1)
+                    nextLevel = 1;  
                 } else {
-                    let currentLevel = p.srsLevel === 0 ? 1 : p.srsLevel; // 避免舊進度卡死
-                    nextLevel = Math.min(SRS_INTERVALS.length - 1, currentLevel + 1); // 依序晉級 3, 5, 7... 天
+                    let currentLevel = p.srsLevel === 0 ? 1 : p.srsLevel; 
+                    nextLevel = Math.min(SRS_INTERVALS.length - 1, currentLevel + 1); 
                 }
             }
 
             const days = SRS_INTERVALS[nextLevel];
             let nextReviewTime = 0;
             if (days === 0) {
-                nextReviewTime = Date.now() + 5 * 60000; // 5分鐘
+                nextReviewTime = Date.now() + 5 * 60000; 
             } else {
-                // 精準對齊跨日邏輯：設定為未來 N 天後的「凌晨 3 點」
                 const d = new Date(Date.now() - 3 * 3600 * 1000 + days * 24 * 3600 * 1000);
                 d.setHours(3, 0, 0, 0);
                 nextReviewTime = d.getTime();
@@ -25717,7 +25720,8 @@
 
             let activeGoal = window.state.dailyGoal;
             if (window.state.isTesting) activeGoal = window.state.testTotal;
-            if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isExtra) activeGoal = window.state.extraTarget;
 
             container.innerHTML = `
                 <div class="px-4 pt-6 pb-2 flex items-center justify-between text-slate-400 z-10 shrink-0">
@@ -25795,6 +25799,24 @@
                     </div>
                 </div>
             `;
+        }
+
+        window.handleNext = async function() {
+            const wasMistake = window.state.mistakes > 0;
+            window.state.historyQueue.push({
+                word: window.state.currentWord,
+                wasMistake: wasMistake
+            });
+
+            if (wasMistake) {
+                window.state.currentWord.isSessionRepeat = true; 
+                window.state.sessionQueue.push(window.state.currentWord);
+            } else {
+                window.state.completedToday++;
+            }
+            
+            window.saveProgress();
+            nextWord();
         }
 
         // 5. Completion View
@@ -25886,8 +25908,6 @@
             }
             window.render();
         };
-
-        window.render = render; 
 
         modal.addEventListener('click', (e) => { if (e.target === modal) window.closeModal(); });
 
