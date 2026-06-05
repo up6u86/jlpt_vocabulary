@@ -151,7 +151,7 @@
 
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
-{
+             {
    "id": 1001,
    "level": "N1",
    "kanji": "利息",
@@ -24276,9 +24276,9 @@
  }
         ];
 
-        // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 14d, 30d, 90d)
-        const SRS_INTERVALS = [0, 1, 3, 5, 7, 14, 30, 90]; 
-        const SRS_TAG_NAMES = ["5分鐘後出現", "1天後複習", "3天後複習", "5天後複習", "7天後複習", "2週後複習", "1個月後複習", "3個月後複習"];
+        // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 10d, 14d, 21d, 30d, 60d, 90d, 180d)
+        const SRS_INTERVALS = [0, 1, 3, 5, 7, 10, 14, 21, 30, 60, 90, 180]; 
+        const SRS_TAG_NAMES = ["5分鐘後出現", "1天後複習", "3天後複習", "5天後複習", "7天後複習", "10天後複習", "2週後複習", "3週後複習", "1個月後複習", "2個月後複習", "3個月後複習", "6個月後複習"];
 
         // --- ICONS ---
         const icons = {
@@ -24459,8 +24459,11 @@
         }
 
         function generateTestQueue(targetLevel) {
-            let queue = getProportionalWords(targetLevel, window.state.testTotal);
-            return shuffle(queue).map(w => ({...w, isTest: true}));
+            let queue = getProportionalWords(targetLevel, window.state.testTotal, w => {
+                let p = window.state.userProgress[w.id];
+                return !p || !p.hasBeenSeen;
+            });
+            return shuffle(queue).map(w => ({...w, isTest: true, isReview: false}));
         }
 
         function generateDailyQueue(requestAmount = null) {
@@ -24468,21 +24471,29 @@
             let reviews = [];
             for (let word of APP_DICTIONARY) {
                 let p = window.state.userProgress[word.id];
-                if (p && p.hasBeenSeen && p.nextReviewDate <= now) {
+                if (p && p.hasBeenSeen && p.nextReviewDate <= now && p.srsLevel > 0) {
                     reviews.push({...word, isReview: true});
                 }
             }
             shuffle(reviews);
 
             const goalAmount = requestAmount || window.state.dailyGoal;
-            let reviewCount = Math.min(reviews.length, goalAmount - (requestAmount ? 0 : window.state.newWordCount)); 
+            // 確保複習題最多佔 75% (如 20題抽15題舊題，剩下的空間留給全新單字)
+            let maxReviews = Math.floor(goalAmount * 0.75);
+            let reviewCount = Math.min(reviews.length, maxReviews); 
             let neededNewWordCount = goalAmount - reviewCount;
 
             let queue = [];
             queue.push(...reviews.slice(0, reviewCount));
 
-            let newWords = getProportionalWords(window.state.targetLevel, neededNewWordCount, w => !window.state.userProgress[w.id] || !window.state.userProgress[w.id].hasBeenSeen);
-            queue.push(...newWords.map(w => ({...w, isReview: false})));
+            let newWords = getProportionalWords(window.state.targetLevel, neededNewWordCount, w => {
+                let p = window.state.userProgress[w.id];
+                return !p || !p.hasBeenSeen;
+            });
+            queue.push(...newWords.map(w => {
+                let p = window.state.userProgress[w.id];
+                return {...w, isReview: (p && p.hasBeenSeen)};
+            }));
 
             return shuffle(queue).slice(0, goalAmount);
         }
@@ -25649,26 +25660,38 @@
             const word = window.state.currentWord;
             let p = window.state.userProgress[word.id] || { srsLevel: 0, nextReviewDate: 0, hasBeenSeen: false, totalMistakes: 0, inMyNotes: false, hiddenFromMistakes: false };
             
-            let isPerfectNew = (!p.hasBeenSeen && window.state.mistakes === 0 && !word.isSessionRepeat);
+            // 判斷是否為「完全沒有錯誤記錄的全新單字」
+            let isPerfectNew = (!word.isReview && !word.isSessionRepeat && window.state.mistakes === 0);
             let nextLevel = p.srsLevel;
 
             if (window.state.mistakes > 0) {
-                nextLevel = 0; 
+                nextLevel = 0; // 答錯，掉入 5分鐘後 (同回合重考)
             } else {
-                if (word.isSessionRepeat) {
-                    nextLevel = 1; 
-                } else if (isPerfectNew) {
-                    nextLevel = 7; // 一次完全答對，進入 3個月(Index 7)
+                if (isPerfectNew) {
+                    nextLevel = 10; // 全新單字一次答對 -> 直升 3個月後 (Index 10)
+                } else if (word.isSessionRepeat) {
+                    nextLevel = 1;  // 同回合補考答對 -> 1天後 (Index 1)
                 } else {
-                    nextLevel = Math.min(SRS_INTERVALS.length - 1, nextLevel + 1);
+                    let currentLevel = p.srsLevel === 0 ? 1 : p.srsLevel; // 避免舊進度卡死
+                    nextLevel = Math.min(SRS_INTERVALS.length - 1, currentLevel + 1); // 依序晉級 3, 5, 7... 天
                 }
             }
 
             const days = SRS_INTERVALS[nextLevel];
+            let nextReviewTime = 0;
+            if (days === 0) {
+                nextReviewTime = Date.now() + 5 * 60000; // 5分鐘
+            } else {
+                // 精準對齊跨日邏輯：設定為未來 N 天後的「凌晨 3 點」
+                const d = new Date(Date.now() - 3 * 3600 * 1000 + days * 24 * 3600 * 1000);
+                d.setHours(3, 0, 0, 0);
+                nextReviewTime = d.getTime();
+            }
+
             window.state.userProgress[word.id] = {
                 ...p,
                 srsLevel: nextLevel,
-                nextReviewDate: days === 0 ? Date.now() + 5*60000 : Date.now() + days * 24 * 60 * 60 * 1000,
+                nextReviewDate: nextReviewTime,
                 hasBeenSeen: true,
                 displayTag: SRS_TAG_NAMES[nextLevel]
             };
