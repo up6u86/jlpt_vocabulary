@@ -116,10 +116,11 @@
             notebookTab: 'mistakes1',
             targetLevel: 'N3', 
             hasTested: false,   
+            testedLevels: {},   // ★ 新增：獨立記錄每個等級是否已測驗
             isTesting: false,   
             isMakeUp: false,    
-            isExtra: false,     // 標記是否為額外學習
-            extraTarget: 0,     // 記錄額外學習時的目標總數
+            isExtra: false,     
+            extraTarget: 0,     
             justCompletedTest: false,
             
             dailyGoal: 20, 
@@ -24562,6 +24563,12 @@
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
+                            // ★ 升級舊帳號資料：把以前全域的 hasTested=true 綁定到舊等級上，保護學習狀態不遺失
+                            if (data.hasTested === true && (!data.testedLevels || Object.keys(data.testedLevels).length === 0)) {
+                                data.testedLevels = {};
+                                data.testedLevels[data.targetLevel || 'N3'] = true;
+                            }
+                            
                             if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime < window.state.lastUpdateTime) {
                                 return;
                             }
@@ -24579,6 +24586,9 @@
                             window.state.view = localView;
                             window.state.inputValue = localInputValue;
                             window.state.notebookTab = localNotebookTab;
+                            
+                            // 確保 testedLevels 有被初始化
+                            if (!window.state.testedLevels) window.state.testedLevels = {};
                             
                             if (wordChanged) {
                                 window.state.inputValue = "";
@@ -24717,6 +24727,7 @@
                     madeUpYesterday: window.state.madeUpYesterday || false,
                     lastStreakDate: window.state.lastStreakDate || "",
                     hasTested: window.state.hasTested,
+                    testedLevels: window.state.testedLevels || {}, // ★ 同步記錄每個等級是否測驗過的資料庫欄位
                     userProgress: window.state.userProgress,
                     sessionQueue: window.state.sessionQueue || [],
                     historyQueue: window.state.historyQueue || [],
@@ -24736,7 +24747,6 @@
         // --- RENDER ENGINE ---
         const container = document.getElementById('view-container');
 
-        // 明確宣告 render 函式，避免 Syntax Error 和 Reference Error
         function render() {
             if (window.state.view === 'loading') renderLoading();
             else if (window.state.view === 'login') renderLogin();
@@ -25085,6 +25095,9 @@
             let actionButtonHtml = "";
             const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
 
+            // ★ 判斷當前等級是否曾經做過程度測驗
+            const isCurrentLevelTested = window.state.testedLevels && window.state.testedLevels[window.state.targetLevel];
+
             if (hasOngoingSession) {
                 let resumeText = "繼續學習";
                 let resumeIcon = "▶️";
@@ -25103,7 +25116,7 @@
                         放棄本次進度
                     </button>
                 `;
-            } else if (!window.state.hasTested) {
+            } else if (!isCurrentLevelTested) { // ★ 若沒有測過當前等級，才顯示開始測驗
                 actionButtonHtml = `
                     <div class="text-center mb-6">
                         <h2 class="text-2xl font-black text-slate-800">程度檢測</h2>
@@ -25206,7 +25219,7 @@
 
         window.changeLevel = async function(newLevel) {
             window.state.targetLevel = newLevel;
-            window.state.hasTested = false; 
+            // ★ 修改：切換等級時，不再將 hasTested 歸零。進度由 testedLevels 控制。
             await window.saveProgress();
             window.render();
         }
@@ -25283,7 +25296,11 @@
         function nextWord() {
             if (window.state.sessionQueue.length === 0) {
                 if (window.state.isTesting) {
-                    window.state.hasTested = true;
+                    // ★ 標記「這個特定的等級」已經完成了程度測驗
+                    if (!window.state.testedLevels) window.state.testedLevels = {};
+                    window.state.testedLevels[window.state.targetLevel] = true;
+                    
+                    window.state.hasTested = true; // 保留給舊版防呆
                     window.state.isTesting = false;
                     window.state.justCompletedTest = true;
                     window.state.dailyGoal = 20; 
