@@ -24606,17 +24606,31 @@
                     }
                     
                     unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
-                        if (docSnap.exists()) {
-                            const data = docSnap.data();
+                        let data = docSnap.exists() ? docSnap.data() : null;
+
+                        // ★ 終極備份還原：攔截 Firebase 延遲/被網頁重整中斷的舊資料
+                        try {
+                            const localBackupStr = localStorage.getItem(`sandy_jp_backup_${studentIdVal}`);
+                            if (localBackupStr) {
+                                const backupData = JSON.parse(localBackupStr);
+                                const serverTime = data ? (data.lastUpdateTime || 0) : 0;
+                                const backupTime = backupData.lastUpdateTime || 0;
+                                
+                                // 如果 LocalStorage 的時間戳比 Firebase 還要新，代表上次的存檔被中斷了！
+                                // 直接採用本地最新的備份，並立刻重新幫伺服器修復更新。
+                                if (backupTime > serverTime) {
+                                    console.log("Local backup is newer! Restoring state to prevent rollback.");
+                                    data = backupData; 
+                                    setDoc(docRef, backupData, { merge: true }).catch(()=>{});
+                                }
+                            }
+                        } catch (e) { console.error("Backup check error", e); }
+
+                        if (data) {
                             
                             if (data.hasTested === true && (!data.testedLevels || Object.keys(data.testedLevels).length === 0)) {
                                 data.testedLevels = {};
                                 data.testedLevels[data.targetLevel || 'N3'] = true;
-                            }
-                            
-                            // ★ 嚴格攔截舊進度：若伺服器時間戳小於「或等於」本地，即忽略，避免覆蓋剛存好的新進度
-                            if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime <= window.state.lastUpdateTime) {
-                                return;
                             }
                             
                             let wordChanged = false;
@@ -24741,8 +24755,7 @@
                 // ★ 強制時間戳嚴格遞增，確保剛存的進度絕對大於舊的 Snapshot，避免覆蓋
                 window.state.lastUpdateTime = Math.max(Date.now(), (window.state.lastUpdateTime || 0) + 1);
                 
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
-                await setDoc(docRef, {
+                const payload = {
                     targetLevel: window.state.targetLevel,
                     dailyGoal: window.state.dailyGoal,
                     completedToday: window.state.completedToday,
@@ -24762,7 +24775,13 @@
                     extraTarget: window.state.extraTarget || 0,
                     lastActiveDate: window.state.lastActiveDate || getLogicalDateStr(),
                     lastUpdateTime: window.state.lastUpdateTime
-                }, { merge: true });
+                };
+
+                // ★ 寫入終極本地備份，瞬間完成，不怕重整
+                localStorage.setItem(`sandy_jp_backup_${currentStudentId}`, JSON.stringify(payload));
+
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
+                await setDoc(docRef, payload, { merge: true });
             } catch (e) {
                 console.error("Save Progress Error:", e);
             }
@@ -25329,8 +25348,13 @@
             await nextWord();
         }
 
-        // --- ★ 終極修復：等待存檔完畢，才顯示任務達成畫面 ---
+        // 防連點機制變數
+        window.isTransitioning = false;
+
         async function nextWord() {
+            if (window.isTransitioning) return;
+            window.isTransitioning = true;
+
             if (window.state.sessionQueue.length === 0) {
                 if (window.state.isTesting) {
                     if (!window.state.testedLevels) window.state.testedLevels = {};
@@ -25356,11 +25380,11 @@
                 }
                 window.state.currentWord = null; 
                 
-                // 強制在跳轉成就畫面之前先寫入 Firebase，確保任何重整動作都不會中斷存檔
                 await window.saveProgress();
                 
                 window.state.view = 'completion';
                 window.render();
+                window.isTransitioning = false;
                 return;
             }
             window.state.currentWord = window.state.sessionQueue.shift();
@@ -25370,10 +25394,12 @@
             window.state.view = 'study';
             await window.saveProgress(); 
             window.render();
+            window.isTransitioning = false;
         }
 
         window.goPrevious = async function() {
-            if (window.state.historyQueue.length === 0) return;
+            if (window.isTransitioning || window.state.historyQueue.length === 0) return;
+            window.isTransitioning = true;
             
             if (window.currentAudio) window.currentAudio.pause();
             if ('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -25401,6 +25427,7 @@
             window.state.view = 'success'; 
             await window.saveProgress(); 
             window.render();
+            window.isTransitioning = false;
         }
 
         // --- NOTEBOOK / 錯題筆記 LOGIC ---
@@ -25852,6 +25879,9 @@
         }
 
         window.handleNext = async function() {
+            if (window.isTransitioning) return;
+            window.isTransitioning = true;
+            
             const wasMistake = window.state.mistakes > 0;
             window.state.historyQueue.push({
                 word: window.state.currentWord,
