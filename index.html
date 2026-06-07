@@ -152,6 +152,9 @@
         let currentStudentId = null;
         let unsubscribeSnapshot = null;
 
+        // 防連點機制變數 (專門鎖定 UI 事件)
+        window.isTransitioning = false;
+
         // --- 本地快取單字庫 (Fallback) ---
         const APP_DICTIONARY = [
  {
@@ -24608,7 +24611,6 @@
                     unsubscribeSnapshot = onSnapshot(docRef, (docSnap) => {
                         let data = docSnap.exists() ? docSnap.data() : null;
 
-                        // ★ 終極備份還原：攔截 Firebase 延遲/被網頁重整中斷的舊資料
                         try {
                             const localBackupStr = localStorage.getItem(`sandy_jp_backup_${studentIdVal}`);
                             if (localBackupStr) {
@@ -24616,8 +24618,6 @@
                                 const serverTime = data ? (data.lastUpdateTime || 0) : 0;
                                 const backupTime = backupData.lastUpdateTime || 0;
                                 
-                                // 如果 LocalStorage 的時間戳比 Firebase 還要新，代表上次的存檔被中斷了！
-                                // 直接採用本地最新的備份，並立刻重新幫伺服器修復更新。
                                 if (backupTime > serverTime) {
                                     console.log("Local backup is newer! Restoring state to prevent rollback.");
                                     data = backupData; 
@@ -24752,7 +24752,6 @@
         window.saveProgress = async function() {
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
-                // ★ 強制時間戳嚴格遞增，確保剛存的進度絕對大於舊的 Snapshot，避免覆蓋
                 window.state.lastUpdateTime = Math.max(Date.now(), (window.state.lastUpdateTime || 0) + 1);
                 
                 const payload = {
@@ -24777,7 +24776,6 @@
                     lastUpdateTime: window.state.lastUpdateTime
                 };
 
-                // ★ 寫入終極本地備份，瞬間完成，不怕重整
                 localStorage.setItem(`sandy_jp_backup_${currentStudentId}`, JSON.stringify(payload));
 
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
@@ -25348,86 +25346,85 @@
             await nextWord();
         }
 
-        // 防連點機制變數
-        window.isTransitioning = false;
-
         async function nextWord() {
-            if (window.isTransitioning) return;
-            window.isTransitioning = true;
-
-            if (window.state.sessionQueue.length === 0) {
-                if (window.state.isTesting) {
-                    if (!window.state.testedLevels) window.state.testedLevels = {};
-                    window.state.testedLevels[window.state.targetLevel] = true;
+            try {
+                if (window.state.sessionQueue.length === 0) {
+                    if (window.state.isTesting) {
+                        if (!window.state.testedLevels) window.state.testedLevels = {};
+                        window.state.testedLevels[window.state.targetLevel] = true;
+                        
+                        window.state.hasTested = true; 
+                        window.state.isTesting = false;
+                        window.state.justCompletedTest = true;
+                        window.state.dailyGoal = 20; 
+                        window.state.completedToday = 0; 
+                    } else if (window.state.isMakeUp) {
+                        window.state.streakDays = (window.state.savedStreak || 0) + 1; 
+                        window.state.savedStreak = 0;
+                        window.state.lastStreakDate = getYesterdayStr(); 
+                        window.state.madeUpYesterday = true;
+                        window.state.isMakeUp = false;
+                        window.state.completedToday = 0; 
+                        window.state.justCompletedTest = false;
+                    } else {
+                        window.state.justCompletedTest = false;
+                        window.evaluateStreak(); 
+                        window.state.isExtra = false;
+                    }
+                    window.state.currentWord = null; 
                     
-                    window.state.hasTested = true; 
-                    window.state.isTesting = false;
-                    window.state.justCompletedTest = true;
-                    window.state.dailyGoal = 20; 
-                    window.state.completedToday = 0; 
-                } else if (window.state.isMakeUp) {
-                    window.state.streakDays = (window.state.savedStreak || 0) + 1; 
-                    window.state.savedStreak = 0;
-                    window.state.lastStreakDate = getYesterdayStr(); 
-                    window.state.madeUpYesterday = true;
-                    window.state.isMakeUp = false;
-                    window.state.completedToday = 0; 
-                    window.state.justCompletedTest = false;
-                } else {
-                    window.state.justCompletedTest = false;
-                    window.evaluateStreak(); 
-                    window.state.isExtra = false;
+                    await window.saveProgress();
+                    
+                    window.state.view = 'completion';
+                    window.render();
+                    return;
                 }
-                window.state.currentWord = null; 
-                
-                await window.saveProgress();
-                
-                window.state.view = 'completion';
+                window.state.currentWord = window.state.sessionQueue.shift();
+                window.state.currentWord.countedMistake = false; 
+                window.state.inputValue = "";
+                window.state.mistakes = 0;
+                window.state.view = 'study';
+                await window.saveProgress(); 
                 window.render();
+            } finally {
                 window.isTransitioning = false;
-                return;
             }
-            window.state.currentWord = window.state.sessionQueue.shift();
-            window.state.currentWord.countedMistake = false; 
-            window.state.inputValue = "";
-            window.state.mistakes = 0;
-            window.state.view = 'study';
-            await window.saveProgress(); 
-            window.render();
-            window.isTransitioning = false;
         }
 
         window.goPrevious = async function() {
             if (window.isTransitioning || window.state.historyQueue.length === 0) return;
             window.isTransitioning = true;
             
-            if (window.currentAudio) window.currentAudio.pause();
-            if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-            
-            const prevItem = window.state.historyQueue.pop();
-            
-            if (window.state.currentWord) {
-                window.state.sessionQueue.unshift(window.state.currentWord);
-            }
-            
-            if (!prevItem.wasMistake) {
-                window.state.completedToday = Math.max(0, window.state.completedToday - 1);
-            } else {
-                for (let i = window.state.sessionQueue.length - 1; i >= 0; i--) {
-                    if (window.state.sessionQueue[i].id === prevItem.word.id) {
-                        window.state.sessionQueue.splice(i, 1);
-                        break;
+            try {
+                if (window.currentAudio) window.currentAudio.pause();
+                if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                
+                const prevItem = window.state.historyQueue.pop();
+                
+                if (window.state.currentWord) {
+                    window.state.sessionQueue.unshift(window.state.currentWord);
+                }
+                
+                if (!prevItem.wasMistake) {
+                    window.state.completedToday = Math.max(0, window.state.completedToday - 1);
+                } else {
+                    for (let i = window.state.sessionQueue.length - 1; i >= 0; i--) {
+                        if (window.state.sessionQueue[i].id === prevItem.word.id) {
+                            window.state.sessionQueue.splice(i, 1);
+                            break;
+                        }
                     }
                 }
-            }
 
-            window.state.currentWord = prevItem.word;
-            window.state.inputValue = prevItem.word.kana; 
-            window.state.mistakes = prevItem.wasMistake ? 1 : 0; 
-            window.state.view = 'success'; 
-            await window.saveProgress(); 
-            window.render();
-            window.isTransitioning = false;
+                window.state.currentWord = prevItem.word;
+                window.state.inputValue = prevItem.word.kana; 
+                window.state.mistakes = prevItem.wasMistake ? 1 : 0; 
+                window.state.view = 'success'; 
+                await window.saveProgress(); 
+                window.render();
+            } finally {
+                window.isTransitioning = false;
+            }
         }
 
         // --- NOTEBOOK / 錯題筆記 LOGIC ---
@@ -25711,32 +25708,40 @@
         }
 
         window.checkAnswer = async function() {
-            const val = window.state.inputValue.trim();
-            const target = window.state.currentWord.kana;
+            if (window.isTransitioning) return;
+            window.isTransitioning = true;
+            try {
+                const val = window.state.inputValue.trim();
+                const target = window.state.currentWord.kana;
 
-            const normVal = toHiragana(val);
-            const normTarget = toHiragana(target);
+                const normVal = toHiragana(val);
+                const normTarget = toHiragana(target);
 
-            if (normVal === normTarget) {
-                evalSRS(); 
-                
-                const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
-                window.playAudio(audioSentence, 1.05);
-                
-                window.state.view = 'success';
-                window.render();
-                await window.saveProgress(); 
-            } else {
-                window.state.mistakes++;
-                window.recordMistakeOnce(); 
-                
-                const inputEl = document.getElementById('kana-input');
-                inputEl.classList.add('animate-[shake_0.5s_ease-in-out]');
-                inputEl.style.borderColor = '#ef4444';
-                setTimeout(() => {
-                    inputEl.classList.remove('animate-[shake_0.5s_ease-in-out]');
-                    inputEl.style.borderColor = '#bae6fd'; 
-                }, 500);
+                if (normVal === normTarget) {
+                    evalSRS(); 
+                    
+                    const audioSentence = window.state.currentWord.sentenceKanji.split(window.state.currentWord.kanji).join(window.state.currentWord.kana);
+                    window.playAudio(audioSentence, 1.05);
+                    
+                    window.state.view = 'success';
+                    window.render();
+                    await window.saveProgress(); 
+                } else {
+                    window.state.mistakes++;
+                    window.recordMistakeOnce(); 
+                    
+                    const inputEl = document.getElementById('kana-input');
+                    inputEl.classList.add('animate-[shake_0.5s_ease-in-out]');
+                    inputEl.style.borderColor = '#ef4444';
+                    setTimeout(() => {
+                        if (inputEl) {
+                            inputEl.classList.remove('animate-[shake_0.5s_ease-in-out]');
+                            inputEl.style.borderColor = '#bae6fd'; 
+                        }
+                    }, 500);
+                }
+            } finally {
+                window.isTransitioning = false;
             }
         }
 
@@ -25881,21 +25886,24 @@
         window.handleNext = async function() {
             if (window.isTransitioning) return;
             window.isTransitioning = true;
-            
-            const wasMistake = window.state.mistakes > 0;
-            window.state.historyQueue.push({
-                word: window.state.currentWord,
-                wasMistake: wasMistake
-            });
+            try {
+                const wasMistake = window.state.mistakes > 0;
+                window.state.historyQueue.push({
+                    word: window.state.currentWord,
+                    wasMistake: wasMistake
+                });
 
-            if (wasMistake) {
-                window.state.currentWord.isSessionRepeat = true; 
-                window.state.sessionQueue.push(window.state.currentWord);
-            } else {
-                window.state.completedToday++;
+                if (wasMistake) {
+                    window.state.currentWord.isSessionRepeat = true; 
+                    window.state.sessionQueue.push(window.state.currentWord);
+                } else {
+                    window.state.completedToday++;
+                }
+                
+                await nextWord();
+            } finally {
+                window.isTransitioning = false;
             }
-            
-            await nextWord();
         }
 
         // 5. Completion View
