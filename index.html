@@ -116,7 +116,7 @@
             notebookTab: 'mistakes1',
             targetLevel: 'N3', 
             hasTested: false,   
-            testedLevels: {},   // ★ 新增：獨立記錄每個等級是否已測驗
+            testedLevels: {},   
             isTesting: false,   
             isMakeUp: false,    
             isExtra: false,     
@@ -24319,12 +24319,14 @@
             );
         }
 
+        // 以凌晨 3:00 為換日線
         function getLogicalDateStr(offsetDays = 0) {
             const d = new Date(Date.now() - 3 * 3600 * 1000 + offsetDays * 24 * 3600 * 1000);
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
         function getYesterdayStr() { return getLogicalDateStr(-1); }
 
+        // 計算兩日期間的「天數差」，用來防禦時光倒流 (d1Str=較新日期, d2Str=較舊日期，回傳正數)
         function getDaysDiff(d1Str, d2Str) {
             if (!d1Str || !d2Str) return 999;
             const [y1, m1, d1] = d1Str.split('-').map(Number);
@@ -24333,6 +24335,66 @@
             const dt2 = new Date(y2, m2 - 1, d2);
             return Math.round((dt1 - dt2) / 86400000);
         }
+
+        // --- ★ 終極修復：全域時間同步與換日判定 ---
+        window.checkDayRollover = function() {
+            const today = getLogicalDateStr();
+            const yesterday = getYesterdayStr();
+            let rolledOver = false;
+            
+            if (window.state.lastActiveDate && window.state.lastActiveDate !== today) {
+                // 【時光機機制修復】：避免因為在凌晨跨日且未重整網頁，導致判定錯亂把連勝日期「倒轉回昨天」
+                if (window.state.completedToday >= window.state.dailyGoal && window.state.dailyGoal > 0) {
+                    // 只有當 lastStreakDate 確實比 lastActiveDate 還要舊的時候，才幫忙補足連勝
+                    if (getDaysDiff(window.state.lastActiveDate, window.state.lastStreakDate) > 0) {
+                        window.state.streakDays++;
+                        window.state.lastStreakDate = window.state.lastActiveDate;
+                    }
+                }
+
+                const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
+                
+                // 如果沒有正在測驗中，跨日清空今日進度
+                if (!hasOngoingSession) {
+                    window.state.completedToday = 0;
+                    window.state.justCompletedTest = false;
+                    window.state.currentWord = null;
+                    window.state.sessionQueue = [];
+                    window.state.historyQueue = [];
+                    window.state.isExtra = false;
+                }
+                
+                // 判定是否斷掉連勝 (如果連勝日期不是今天也不是昨天，代表曠課)
+                if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
+                    if (window.state.streakDays > 0) {
+                        window.state.savedStreak = window.state.streakDays; 
+                    }
+                    window.state.streakDays = 0;
+                    window.state.madeUpYesterday = false;
+                } else if (window.state.lastStreakDate === yesterday) {
+                    window.state.madeUpYesterday = false; 
+                }
+                
+                window.state.lastActiveDate = today;
+                rolledOver = true;
+            } else if (!window.state.lastActiveDate) {
+                window.state.lastActiveDate = today;
+                rolledOver = true;
+            }
+            return rolledOver;
+        };
+
+        window.evaluateStreak = function(dateStr) {
+            if (window.state.isTesting || window.state.isMakeUp) return;
+            
+            const targetDate = dateStr || getLogicalDateStr();
+            if (window.state.completedToday >= window.state.dailyGoal && window.state.dailyGoal > 0) {
+                if (window.state.lastStreakDate !== targetDate) {
+                    window.state.streakDays++;
+                    window.state.lastStreakDate = targetDate;
+                }
+            }
+        };
 
         // --- AUDIO UNLOCK MECHANISM ---
         window.appAudioUnlocked = false;
@@ -24563,7 +24625,7 @@
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
-                            // ★ 升級舊帳號資料：把以前全域的 hasTested=true 綁定到舊等級上，保護學習狀態不遺失
+                            // 升級舊帳號資料
                             if (data.hasTested === true && (!data.testedLevels || Object.keys(data.testedLevels).length === 0)) {
                                 data.testedLevels = {};
                                 data.testedLevels[data.targetLevel || 'N3'] = true;
@@ -24587,7 +24649,6 @@
                             window.state.inputValue = localInputValue;
                             window.state.notebookTab = localNotebookTab;
                             
-                            // 確保 testedLevels 有被初始化
                             if (!window.state.testedLevels) window.state.testedLevels = {};
                             
                             if (wordChanged) {
@@ -24601,31 +24662,9 @@
                                 }
                             }
                             
-                            const today = getLogicalDateStr();
-                            const yesterday = getYesterdayStr();
-                            
-                            if (window.state.lastActiveDate !== today) {
-                                const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
-                                
-                                if (!hasOngoingSession) {
-                                    window.state.completedToday = 0;
-                                    window.state.justCompletedTest = false;
-                                    window.state.currentWord = null;
-                                    window.state.sessionQueue = [];
-                                    window.state.historyQueue = [];
-                                    window.state.isExtra = false;
-                                }
-                                
-                                if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
-                                    if (window.state.streakDays > 0) {
-                                        window.state.savedStreak = window.state.streakDays; 
-                                    }
-                                    window.state.streakDays = 0;
-                                    window.state.madeUpYesterday = false;
-                                } else if (window.state.lastStreakDate === yesterday) {
-                                    window.state.madeUpYesterday = false; 
-                                }
-                                window.state.lastActiveDate = today;
+                            // ★ 使用全新改良版的換日判定
+                            const rolledOver = window.checkDayRollover();
+                            if (rolledOver) {
                                 window.saveProgress();
                             }
                             
@@ -24637,7 +24676,7 @@
                             } else if (window.state.view === 'study') {
                                 let activeGoal = window.state.dailyGoal;
                                 if (window.state.isTesting) activeGoal = window.state.testTotal;
-                                else if (window.state.isMakeUp) activeGoal = 20;
+                                else if (window.state.isMakeUp) activeGoal = window.state.dailyGoal; // 補考題數同步
                                 else if (window.state.isExtra) activeGoal = window.state.extraTarget;
                                 
                                 const progressSpan = document.querySelector('.text-sky-600.font-black span.text-sm');
@@ -24727,7 +24766,7 @@
                     madeUpYesterday: window.state.madeUpYesterday || false,
                     lastStreakDate: window.state.lastStreakDate || "",
                     hasTested: window.state.hasTested,
-                    testedLevels: window.state.testedLevels || {}, // ★ 同步記錄每個等級是否測驗過的資料庫欄位
+                    testedLevels: window.state.testedLevels || {}, 
                     userProgress: window.state.userProgress,
                     sessionQueue: window.state.sessionQueue || [],
                     historyQueue: window.state.historyQueue || [],
@@ -25095,7 +25134,6 @@
             let actionButtonHtml = "";
             const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
 
-            // ★ 判斷當前等級是否曾經做過程度測驗
             const isCurrentLevelTested = window.state.testedLevels && window.state.testedLevels[window.state.targetLevel];
 
             if (hasOngoingSession) {
@@ -25116,7 +25154,7 @@
                         放棄本次進度
                     </button>
                 `;
-            } else if (!isCurrentLevelTested) { // ★ 若沒有測過當前等級，才顯示開始測驗
+            } else if (!isCurrentLevelTested) { 
                 actionButtonHtml = `
                     <div class="text-center mb-6">
                         <h2 class="text-2xl font-black text-slate-800">程度檢測</h2>
@@ -25127,10 +25165,12 @@
                     </button>
                 `;
             } else if (window.state.savedStreak > 0 && window.state.streakDays === 0) {
+                // 補考題數動態跟隨您當前的目標
+                let makeupGoal = window.state.dailyGoal;
                 actionButtonHtml = `
                     <div class="text-center mb-6">
                         <h2 class="text-2xl font-black text-slate-800">搶救連續學習</h2>
-                        <p class="text-slate-500 font-bold mt-1 text-sm">完成 20 題補考，恢復 <span class="text-orange-500">${window.state.savedStreak}</span> 天紀錄！</p>
+                        <p class="text-slate-500 font-bold mt-1 text-sm">完成 <span class="text-orange-500">${makeupGoal}</span> 題補考，恢復 <span class="text-orange-500">${window.state.savedStreak}</span> 天紀錄！</p>
                     </div>
                     <button onclick="window.startMakeUp()" class="w-full bg-orange-500 hover:bg-orange-600 text-white text-xl font-black py-4 rounded-[1.5rem] shadow-[0_6px_0_#ea580c] active:shadow-[0_0px_0_#ea580c] active:translate-y-[6px] transition-all flex items-center justify-center gap-2">
                         🚑 開始補考
@@ -25219,7 +25259,6 @@
 
         window.changeLevel = async function(newLevel) {
             window.state.targetLevel = newLevel;
-            // ★ 修改：切換等級時，不再將 hasTested 歸零。進度由 testedLevels 控制。
             await window.saveProgress();
             window.render();
         }
@@ -25228,12 +25267,17 @@
             let newGoal = window.state.dailyGoal + amount;
             newGoal = Math.round(newGoal / 5) * 5; 
             window.state.dailyGoal = Math.min(50, Math.max(5, newGoal));
+            
+            window.evaluateStreak();
+            if (window.checkDayRollover()) {} 
+            
             await window.saveProgress();
             window.render();
         }
 
         window.resumeSession = function() {
             window.unlockAudio();
+            window.checkDayRollover();
             window.state.view = 'study';
             window.render();
         }
@@ -25245,12 +25289,17 @@
             window.state.isTesting = false;
             window.state.isMakeUp = false;
             window.state.isExtra = false;
+            
+            window.evaluateStreak();
+            window.checkDayRollover();
+            
             window.saveProgress();
             window.render();
         }
 
         window.startTest = function() {
             window.unlockAudio();
+            window.checkDayRollover();
             window.state.sessionQueue = generateTestQueue(window.state.targetLevel);
             window.state.completedToday = 0;
             window.state.isTesting = true;
@@ -25262,10 +25311,11 @@
 
         window.startMakeUp = function() {
             window.unlockAudio();
+            window.checkDayRollover();
             window.state.isMakeUp = true;
             window.state.isTesting = false;
             window.state.isExtra = false;
-            window.state.sessionQueue = generateDailyQueue(20); 
+            window.state.sessionQueue = generateDailyQueue(window.state.dailyGoal); 
             window.state.completedToday = 0;
             window.state.historyQueue = [];
             nextWord();
@@ -25273,6 +25323,7 @@
 
         window.startDaily = function() {
             window.unlockAudio();
+            window.checkDayRollover();
             window.state.sessionQueue = generateDailyQueue();
             window.state.completedToday = 0;
             window.state.isTesting = false;
@@ -25284,6 +25335,7 @@
 
         window.startExtra = function() {
             window.unlockAudio();
+            window.checkDayRollover();
             window.state.sessionQueue = generateDailyQueue(5); 
             window.state.isTesting = false;
             window.state.isMakeUp = false;
@@ -25296,11 +25348,10 @@
         function nextWord() {
             if (window.state.sessionQueue.length === 0) {
                 if (window.state.isTesting) {
-                    // ★ 標記「這個特定的等級」已經完成了程度測驗
                     if (!window.state.testedLevels) window.state.testedLevels = {};
                     window.state.testedLevels[window.state.targetLevel] = true;
                     
-                    window.state.hasTested = true; // 保留給舊版防呆
+                    window.state.hasTested = true; 
                     window.state.isTesting = false;
                     window.state.justCompletedTest = true;
                     window.state.dailyGoal = 20; 
@@ -25315,13 +25366,7 @@
                     window.state.justCompletedTest = false;
                 } else {
                     window.state.justCompletedTest = false;
-                    if (window.state.completedToday >= window.state.dailyGoal) {
-                        const today = getLogicalDateStr();
-                        if (window.state.lastStreakDate !== today) {
-                            window.state.streakDays++;
-                            window.state.lastStreakDate = today;
-                        }
-                    }
+                    window.evaluateStreak(); 
                     window.state.isExtra = false;
                 }
                 window.state.currentWord = null; 
@@ -25506,7 +25551,7 @@
 
             let activeGoal = window.state.dailyGoal;
             if (window.state.isTesting) activeGoal = window.state.testTotal;
-            else if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isMakeUp) activeGoal = window.state.dailyGoal; 
             else if (window.state.isExtra) activeGoal = window.state.extraTarget;
 
             container.innerHTML = `
@@ -25737,7 +25782,7 @@
 
             let activeGoal = window.state.dailyGoal;
             if (window.state.isTesting) activeGoal = window.state.testTotal;
-            else if (window.state.isMakeUp) activeGoal = 20;
+            else if (window.state.isMakeUp) activeGoal = window.state.dailyGoal; 
             else if (window.state.isExtra) activeGoal = window.state.extraTarget;
 
             container.innerHTML = `
@@ -25921,6 +25966,11 @@
         window.goToDashboard = async function() {
             window.state.view = 'dashboard';
             if(currentStudentId) {
+                window.evaluateStreak();
+                const rolledOver = window.checkDayRollover();
+                if (rolledOver) {
+                    // checkDayRollover internally handles everything, but we ensure save is called
+                }
                 await window.saveProgress();
             }
             window.render();
