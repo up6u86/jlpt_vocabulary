@@ -24279,11 +24279,9 @@
  }
         ];
 
-        // SRS 遺忘曲線 (5m, 1d, 3d, 5d, 7d, 10d, 14d, 21d, 30d, 60d, 90d, 180d)
         const SRS_INTERVALS = [0, 1, 3, 5, 7, 10, 14, 21, 30, 60, 90, 180]; 
         const SRS_TAG_NAMES = ["5分鐘後出現", "1天後複習", "3天後複習", "5天後複習", "7天後複習", "10天後複習", "2週後複習", "3週後複習", "1個月後複習", "2個月後複習", "3個月後複習", "6個月後複習"];
 
-        // --- ICONS ---
         const icons = {
             check: `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
             cup: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>`,
@@ -24297,7 +24295,6 @@
             book: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>`
         };
 
-        // --- UTILS ---
         function levenshtein(a, b) {
             const m = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
             for(let i=0; i<=a.length; i++) m[i][0] = i;
@@ -24312,21 +24309,18 @@
         }
 
         function isKana(text) { return /^[\u3040-\u309F\u30A0-\u30FFー]*$/.test(text); }
-
         function toHiragana(text) {
             return text.replace(/[\u30A1-\u30F6]/g, match =>
                 String.fromCharCode(match.charCodeAt(0) - 0x60)
             );
         }
 
-        // 以凌晨 3:00 為換日線
         function getLogicalDateStr(offsetDays = 0) {
             const d = new Date(Date.now() - 3 * 3600 * 1000 + offsetDays * 24 * 3600 * 1000);
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
         function getYesterdayStr() { return getLogicalDateStr(-1); }
 
-        // 計算兩日期間的「天數差」，用來防禦時光倒流 (d1Str=較新日期, d2Str=較舊日期，回傳正數)
         function getDaysDiff(d1Str, d2Str) {
             if (!d1Str || !d2Str) return 999;
             const [y1, m1, d1] = d1Str.split('-').map(Number);
@@ -24336,17 +24330,14 @@
             return Math.round((dt1 - dt2) / 86400000);
         }
 
-        // --- ★ 終極修復：全域時間同步與換日判定 ---
         window.checkDayRollover = function() {
             const today = getLogicalDateStr();
             const yesterday = getYesterdayStr();
             let rolledOver = false;
             
             if (window.state.lastActiveDate && window.state.lastActiveDate !== today) {
-                // 【時光機機制修復】：避免因為在凌晨跨日且未重整網頁，導致判定錯亂把連勝日期「倒轉回昨天」
-                if (window.state.completedToday >= window.state.dailyGoal && window.state.dailyGoal > 0) {
-                    // 只有當 lastStreakDate 確實比 lastActiveDate 還要舊的時候，才幫忙補足連勝
-                    if (getDaysDiff(window.state.lastActiveDate, window.state.lastStreakDate) > 0) {
+                if (!window.state.isTesting && !window.state.isMakeUp && window.state.completedToday >= window.state.dailyGoal && window.state.dailyGoal > 0) {
+                    if (window.state.lastStreakDate !== window.state.lastActiveDate) {
                         window.state.streakDays++;
                         window.state.lastStreakDate = window.state.lastActiveDate;
                     }
@@ -24354,7 +24345,6 @@
 
                 const hasOngoingSession = window.state.currentWord !== null || (window.state.sessionQueue && window.state.sessionQueue.length > 0);
                 
-                // 如果沒有正在測驗中，跨日清空今日進度
                 if (!hasOngoingSession) {
                     window.state.completedToday = 0;
                     window.state.justCompletedTest = false;
@@ -24364,7 +24354,6 @@
                     window.state.isExtra = false;
                 }
                 
-                // 判定是否斷掉連勝 (如果連勝日期不是今天也不是昨天，代表曠課)
                 if (window.state.lastStreakDate !== today && window.state.lastStreakDate !== yesterday) {
                     if (window.state.streakDays > 0) {
                         window.state.savedStreak = window.state.streakDays; 
@@ -24396,7 +24385,6 @@
             }
         };
 
-        // --- AUDIO UNLOCK MECHANISM ---
         window.appAudioUnlocked = false;
         window.unlockAudio = function() {
             if (window.appAudioUnlocked) return;
@@ -24408,7 +24396,6 @@
             window.appAudioUnlocked = true;
         };
 
-        // --- RECORD MISTAKE ---
         window.recordMistakeOnce = function() {
             if (window.state.currentWord && !window.state.currentWord.countedMistake) {
                 window.state.currentWord.countedMistake = true;
@@ -24420,7 +24407,6 @@
             }
         };
 
-        // --- ULTIMATE VOICE API ---
         window.currentAudio = null;
         window.currentUtterance = null;
         
@@ -24486,7 +24472,6 @@
 
         function generateRuby(kanji, kana) { return `<ruby class="font-bold tracking-widest">${kanji}<rt>${kana}</rt></ruby>`; }
 
-        // --- QUEUE GENERATION ---
         function shuffle(array) { return array.sort(() => Math.random() - 0.5); }
 
         function getProportionalWords(targetLevel, totalCount, filterFn = w => true) {
@@ -24560,7 +24545,6 @@
             return shuffle(queue).slice(0, goalAmount);
         }
 
-        // --- FIREBASE SYNC LOGIC ---
         async function initFirebase() {
             try {
                 let firebaseConfig = null;
@@ -24625,7 +24609,6 @@
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             
-                            // 升級舊帳號資料
                             if (data.hasTested === true && (!data.testedLevels || Object.keys(data.testedLevels).length === 0)) {
                                 data.testedLevels = {};
                                 data.testedLevels[data.targetLevel || 'N3'] = true;
@@ -24662,7 +24645,6 @@
                                 }
                             }
                             
-                            // ★ 使用全新改良版的換日判定
                             const rolledOver = window.checkDayRollover();
                             if (rolledOver) {
                                 window.saveProgress();
@@ -24676,7 +24658,7 @@
                             } else if (window.state.view === 'study') {
                                 let activeGoal = window.state.dailyGoal;
                                 if (window.state.isTesting) activeGoal = window.state.testTotal;
-                                else if (window.state.isMakeUp) activeGoal = window.state.dailyGoal; // 補考題數同步
+                                else if (window.state.isMakeUp) activeGoal = window.state.dailyGoal; 
                                 else if (window.state.isExtra) activeGoal = window.state.extraTarget;
                                 
                                 const progressSpan = document.querySelector('.text-sky-600.font-black span.text-sm');
@@ -25165,7 +25147,6 @@
                     </button>
                 `;
             } else if (window.state.savedStreak > 0 && window.state.streakDays === 0) {
-                // 補考題數動態跟隨您當前的目標
                 let makeupGoal = window.state.dailyGoal;
                 actionButtonHtml = `
                     <div class="text-center mb-6">
@@ -25269,7 +25250,7 @@
             window.state.dailyGoal = Math.min(50, Math.max(5, newGoal));
             
             window.evaluateStreak();
-            if (window.checkDayRollover()) {} 
+            window.checkDayRollover();
             
             await window.saveProgress();
             window.render();
@@ -25282,7 +25263,7 @@
             window.render();
         }
 
-        window.cancelSession = function() {
+        window.cancelSession = async function() {
             window.state.currentWord = null;
             window.state.sessionQueue = [];
             window.state.historyQueue = [];
@@ -25293,11 +25274,11 @@
             window.evaluateStreak();
             window.checkDayRollover();
             
-            window.saveProgress();
+            await window.saveProgress();
             window.render();
         }
 
-        window.startTest = function() {
+        window.startTest = async function() {
             window.unlockAudio();
             window.checkDayRollover();
             window.state.sessionQueue = generateTestQueue(window.state.targetLevel);
@@ -25306,10 +25287,10 @@
             window.state.isMakeUp = false;
             window.state.isExtra = false;
             window.state.historyQueue = [];
-            nextWord();
+            await nextWord();
         }
 
-        window.startMakeUp = function() {
+        window.startMakeUp = async function() {
             window.unlockAudio();
             window.checkDayRollover();
             window.state.isMakeUp = true;
@@ -25318,10 +25299,10 @@
             window.state.sessionQueue = generateDailyQueue(window.state.dailyGoal); 
             window.state.completedToday = 0;
             window.state.historyQueue = [];
-            nextWord();
+            await nextWord();
         }
 
-        window.startDaily = function() {
+        window.startDaily = async function() {
             window.unlockAudio();
             window.checkDayRollover();
             window.state.sessionQueue = generateDailyQueue();
@@ -25330,10 +25311,10 @@
             window.state.isMakeUp = false;
             window.state.isExtra = false;
             window.state.historyQueue = [];
-            nextWord();
+            await nextWord();
         }
 
-        window.startExtra = function() {
+        window.startExtra = async function() {
             window.unlockAudio();
             window.checkDayRollover();
             window.state.sessionQueue = generateDailyQueue(5); 
@@ -25342,10 +25323,11 @@
             window.state.isExtra = true;
             window.state.extraTarget = window.state.completedToday + 5;
             window.state.historyQueue = [];
-            nextWord();
+            await nextWord();
         }
 
-        function nextWord() {
+        // --- ★ 終極修復：等待存檔完畢，才顯示任務達成畫面 ---
+        async function nextWord() {
             if (window.state.sessionQueue.length === 0) {
                 if (window.state.isTesting) {
                     if (!window.state.testedLevels) window.state.testedLevels = {};
@@ -25370,8 +25352,11 @@
                     window.state.isExtra = false;
                 }
                 window.state.currentWord = null; 
+                
+                // 強制在跳轉成就畫面之前先寫入 Firebase，確保任何重整動作都不會中斷存檔
+                await window.saveProgress();
+                
                 window.state.view = 'completion';
-                window.saveProgress();
                 window.render();
                 return;
             }
@@ -25380,11 +25365,11 @@
             window.state.inputValue = "";
             window.state.mistakes = 0;
             window.state.view = 'study';
-            window.saveProgress(); 
+            await window.saveProgress(); 
             window.render();
         }
 
-        window.goPrevious = function() {
+        window.goPrevious = async function() {
             if (window.state.historyQueue.length === 0) return;
             
             if (window.currentAudio) window.currentAudio.pause();
@@ -25411,7 +25396,7 @@
             window.state.inputValue = prevItem.word.kana; 
             window.state.mistakes = prevItem.wasMistake ? 1 : 0; 
             window.state.view = 'success'; 
-            window.saveProgress(); 
+            await window.saveProgress(); 
             window.render();
         }
 
@@ -25511,7 +25496,7 @@
                     <!-- Header -->
                     <div class="px-4 py-4 flex items-center justify-between bg-white shadow-sm z-20">
                         <button onclick="window.closeNotebook()" class="p-2 text-slate-400 hover:text-indigo-500 active:scale-90 transition-transform">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+                            <div class="w-10"></div>
                         </button>
                         <h1 class="text-xl font-black text-slate-800 tracking-tight">錯題筆記</h1>
                         <div class="w-10"></div>
@@ -25562,7 +25547,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <div class="w-10"></div>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
@@ -25793,7 +25778,7 @@
                     <div class="flex items-center gap-2 text-sky-600 font-black">
                         ${icons.cup} <span class="text-sm">${window.state.completedToday}/${activeGoal}</span>
                     </div>
-                    <button class="p-2 opacity-0"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+                    <div class="w-10"></div>
                 </div>
 
                 <div class="flex-1 flex flex-col p-4 items-center justify-start animate-slide-up z-10 w-full max-w-sm mx-auto overflow-y-auto hide-scrollbar pb-12">
@@ -25877,7 +25862,7 @@
                 window.state.completedToday++;
             }
             
-            window.saveProgress();
+            await window.saveProgress();
             nextWord();
         }
 
@@ -25982,4 +25967,4 @@
         initFirebase();
     </script>
 </body>
-</html>
+</html>   "kana": "ふび",
