@@ -24376,7 +24376,7 @@
         window.evaluateStreak = function(dateStr) {
             if (window.state.isTesting || window.state.isMakeUp) return;
             
-            const targetDate = dateStr || getLogicalDateStr();
+            const targetDate = dateStr || window.state.lastActiveDate || getLogicalDateStr();
             if (window.state.completedToday >= window.state.dailyGoal && window.state.dailyGoal > 0) {
                 if (window.state.lastStreakDate !== targetDate) {
                     window.state.streakDays++;
@@ -24614,7 +24614,8 @@
                                 data.testedLevels[data.targetLevel || 'N3'] = true;
                             }
                             
-                            if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime < window.state.lastUpdateTime) {
+                            // ★ 嚴格攔截舊進度：若伺服器時間戳小於「或等於」本地，即忽略，避免覆蓋剛存好的新進度
+                            if (data.lastUpdateTime && window.state.lastUpdateTime && data.lastUpdateTime <= window.state.lastUpdateTime) {
                                 return;
                             }
                             
@@ -24737,7 +24738,9 @@
         window.saveProgress = async function() {
             if (!db || !currentUserAuth || !currentStudentId) return;
             try {
-                window.state.lastUpdateTime = Date.now();
+                // ★ 強制時間戳嚴格遞增，確保剛存的進度絕對大於舊的 Snapshot，避免覆蓋
+                window.state.lastUpdateTime = Math.max(Date.now(), (window.state.lastUpdateTime || 0) + 1);
+                
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'students', currentStudentId);
                 await setDoc(docRef, {
                     targetLevel: window.state.targetLevel,
@@ -25496,7 +25499,7 @@
                     <!-- Header -->
                     <div class="px-4 py-4 flex items-center justify-between bg-white shadow-sm z-20">
                         <button onclick="window.closeNotebook()" class="p-2 text-slate-400 hover:text-indigo-500 active:scale-90 transition-transform">
-                            <div class="w-10"></div>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
                         </button>
                         <h1 class="text-xl font-black text-slate-800 tracking-tight">錯題筆記</h1>
                         <div class="w-10"></div>
@@ -25695,7 +25698,7 @@
                 
                 window.state.view = 'success';
                 window.render();
-                window.saveProgress(); 
+                await window.saveProgress(); 
             } else {
                 window.state.mistakes++;
                 window.recordMistakeOnce(); 
@@ -25862,8 +25865,7 @@
                 window.state.completedToday++;
             }
             
-            await window.saveProgress();
-            nextWord();
+            await nextWord();
         }
 
         // 5. Completion View
@@ -25967,4 +25969,4 @@
         initFirebase();
     </script>
 </body>
-</html>   "kana": "ふび",
+</html>
